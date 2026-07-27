@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Model Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0F1318;
+    --panel: #171D24;
+    --panel-raised: #1D242C;
+    --border: #2A323C;
+    --text: #E4E9F0;
+    --text-dim: #7C8A9C;
+    --accent: #5EEAD4;
+    --accent-dim: #2C7A6E;
+    --amber: #F5A623;
+    --red: #F26B6B;
+    --font-ui: 'IBM Plex Sans', sans-serif;
+    --font-mono: 'IBM Plex Mono', monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-ui);
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  .app {
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    height: 100vh;
+  }
+
+  /* --- Sidebar --- */
+  .sidebar {
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    padding: 20px 0;
+  }
+
+  .brand {
+    padding: 0 20px 20px 20px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 16px;
+  }
+
+  .brand-title {
+    font-family: var(--font-mono);
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+  }
+
+  .brand-sub {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 2px;
+  }
+
+  .status-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 20px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  .led {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    flex-shrink: 0;
+  }
+  .led.on {
+    background: var(--accent);
+    box-shadow: 0 0 6px var(--accent);
+    animation: pulse 2s ease-in-out infinite;
+  }
+  .led.off {
+    background: var(--red);
+    box-shadow: 0 0 6px var(--red);
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  .nav {
+    margin-top: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 0 12px;
+  }
+
+  .nav-item {
+    padding: 10px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text-dim);
+    border: 1px solid transparent;
+    transition: all 0.15s ease;
+  }
+
+  .nav-item:hover {
+    color: var(--text);
+    background: var(--panel-raised);
+  }
+
+  .nav-item.active {
+    color: var(--accent);
+    background: var(--panel-raised);
+    border-color: var(--accent-dim);
+  }
+
+  /* --- Main --- */
+  .main {
+    padding: 28px 36px;
+    overflow-y: auto;
+  }
+
+  .view { display: none; }
+  .view.active { display: block; }
+
+  h1 {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0 0 4px 0;
+  }
+
+  .view-sub {
+    color: var(--text-dim);
+    font-size: 13px;
+    margin-bottom: 24px;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    align-items: start;
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 18px 20px;
+  }
+
+  .panel-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-dim);
+    margin-bottom: 14px;
+    font-weight: 600;
+  }
+
+  .model-card {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+    cursor: pointer;
+    transition: border-color 0.15s ease;
+  }
+  .model-card:hover { border-color: var(--accent-dim); }
+  .model-card.selected { border-color: var(--accent); background: var(--panel-raised); }
+
+  .model-name {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .model-meta {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-top: 6px;
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .tag-pill {
+    display: inline-block;
+    background: var(--panel-raised);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 10px;
+    color: var(--accent);
+  }
+
+  label {
+    display: block;
+    font-size: 11px;
+    color: var(--text-dim);
+    margin: 10px 0 4px 0;
+    font-family: var(--font-mono);
+  }
+
+  input[type=text], input[type=number] {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 8px 10px;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+  input:focus { outline: none; border-color: var(--accent); }
+
+  button {
+    margin-top: 16px;
+    background: var(--accent);
+    color: #0F1318;
+    border: none;
+    border-radius: 6px;
+    padding: 10px 18px;
+    font-family: var(--font-ui);
+    font-weight: 600;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  button:hover { background: #7EF3E0; }
+  button:disabled { background: var(--border); color: var(--text-dim); cursor: not-allowed; }
+
+  .result-box {
+    margin-top: 16px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    min-height: 20px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .result-box.error { color: var(--red); border-color: var(--red); }
+  .result-box.success { color: var(--accent); }
+
+  .empty-note {
+    color: var(--text-dim);
+    font-size: 12px;
+    font-family: var(--font-mono);
+  }
+
+  .divider {
+    border-top: 1px solid var(--border);
+    margin-top: 20px;
+  }
+
+  input[type=file] {
+    display: block;
+    width: 100%;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    background: var(--bg);
+    border: 1px dashed var(--border);
+    border-radius: 5px;
+    padding: 10px;
+  }
+
+  .batch-table-wrap {
+    margin-top: 14px;
+    max-height: 260px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+
+  table.batch-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+  table.batch-table th, table.batch-table td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    white-space: nowrap;
+  }
+  table.batch-table th {
+    color: var(--text-dim);
+    position: sticky;
+    top: 0;
+    background: var(--panel-raised);
+  }
+  table.batch-table td.pred-col {
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  .batch-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 10px;
+  }
+
+  .link-btn {
+    background: none;
+    border: 1px solid var(--accent-dim);
+    color: var(--accent);
+    margin-top: 0;
+    padding: 6px 12px;
+    font-size: 11px;
+    font-family: var(--font-mono);
+  }
+  .link-btn:hover { background: var(--panel-raised); }
+
+  /* --- Compare view --- */
+  .compare-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-top: 20px;
+    max-width: 720px;
+  }
+
+  .metric-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 18px;
+  }
+  .metric-card.is-winner { border-color: var(--accent); }
+
+  .metric-card-title {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .winner-badge {
+    font-size: 10px;
+    background: var(--accent);
+    color: #0F1318;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 700;
+  }
+
+  .metric-row {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .metric-row:last-child { border-bottom: none; }
+  .metric-row .val { color: var(--accent); font-weight: 600; }
+
+  .verdict-banner {
+    max-width: 720px;
+    margin-top: 16px;
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    background: var(--panel-raised);
+    border: 1px solid var(--accent-dim);
+    color: var(--text);
+  }
+
+  .disagree-row td { color: var(--amber); }
+
+  /* --- Chat view --- */
+  .chat-wrap {
+    max-width: 720px;
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 140px);
+  }
+
+  .chat-log {
+    flex: 1;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .msg {
+    max-width: 80%;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .msg.user {
+    align-self: flex-end;
+    background: var(--accent-dim);
+    color: var(--text);
+  }
+  .msg.bot {
+    align-self: flex-start;
+    background: var(--panel-raised);
+    border: 1px solid var(--border);
+    font-family: var(--font-mono);
+  }
+  .msg.pending { color: var(--text-dim); font-style: italic; }
+
+  .chat-input-row {
+    display: flex;
+    gap: 10px;
+    margin-top: 14px;
+  }
+  .chat-input-row input {
+    flex: 1;
+    margin-top: 0;
+  }
+  .chat-input-row button { margin-top: 0; }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <div class="sidebar">
+    <div class="brand">
+      <div class="brand-title">MODEL_DASHBOARD</div>
+      <div class="brand-sub">registry test console</div>
+    </div>
+    <div class="status-row"><span class="led" id="led-mlflow"></span> MLflow</div>
+    <div class="status-row"><span class="led" id="led-ollama"></span> Ollama (qwen2)</div>
+    <div class="nav">
+      <div class="nav-item active" data-view="registry">Registry</div>
+      <div class="nav-item" data-view="compare">Compare</div>
+      <div class="nav-item" data-view="llm">LLM Chat</div>
+    </div>
+  </div>
+
+  <div class="main">
+    <!-- Registry + ML testing view -->
+    <div class="view active" id="view-registry">
+      <h1>Registered Models</h1>
+      <div class="view-sub">Browse versions and aliases, then run a live prediction against any of them.</div>
+
+      <div class="grid">
+        <div class="panel">
+          <div class="panel-title">Models</div>
+          <div id="model-list"><span class="empty-note">Loading…</span></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">Test Prediction</div>
+          <div id="predict-form"><span class="empty-note">Select a model version to begin.</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Champion vs Challenger comparison view -->
+    <div class="view" id="view-compare">
+      <h1>Champion vs Challenger</h1>
+      <div class="view-sub">Upload a labeled test set (features + the actual outcome column) and score both versions against it, side by side.</div>
+
+      <div class="panel" style="max-width:640px;">
+        <div class="panel-title">Setup</div>
+        <label>Registered Model Name</label>
+        <input type="text" id="cmp-model-name" value="credit-churn-gbc">
+
+        <label>Alias A (e.g. champion)</label>
+        <input type="text" id="cmp-alias-a" value="champion">
+
+        <label>Alias B (e.g. challenger)</label>
+        <input type="text" id="cmp-alias-b" value="challenger">
+
+        <label>Target / Label Column Name</label>
+        <input type="text" id="cmp-target-col" value="target">
+
+        <label>Labeled Test CSV (features + label column, same file)</label>
+        <input type="file" id="cmp-file" accept=".csv">
+
+        <button onclick="runCompare()">Run Comparison</button>
+      </div>
+
+      <div id="compare-result"></div>
+    </div>
+    <!-- LLM chat view -->
+    <div class="view" id="view-llm">
+      <h1>LLM Test Chat</h1>
+      <div class="view-sub">Talking to <span id="llm-model-name" style="font-family:var(--font-mono); color:var(--accent);">qwen2</span> via the local Ollama runtime.</div>
+
+      <div class="chat-wrap">
+        <div class="chat-log" id="chat-log"></div>
+        <div class="chat-input-row">
+          <input type="text" id="chat-input" placeholder="Ask something…" onkeydown="if(event.key==='Enter') sendChat()">
+          <button onclick="sendChat()">Send</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = "";  // same origin — FastAPI serves this file too
+let selectedModel = null;
+let selectedAlias = null;
+
+// --- Nav switching ---
+document.querySelectorAll(".nav-item").forEach(el => {
+  el.addEventListener("click", () => {
+    document.querySelectorAll(".nav-item").forEach(n => n.classList.remove("active"));
+    document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
+    el.classList.add("active");
+    document.getElementById("view-" + el.dataset.view).classList.add("active");
+  });
+});
+
+// --- Health check ---
+async function checkHealth() {
+  try {
+    const res = await fetch(`${API}/api/health`);
+    const data = await res.json();
+    document.getElementById("led-mlflow").className = "led " + (data.mlflow ? "on" : "off");
+    document.getElementById("led-ollama").className = "led " + (data.ollama ? "on" : "off");
+  } catch (e) {
+    document.getElementById("led-mlflow").className = "led off";
+    document.getElementById("led-ollama").className = "led off";
+  }
+}
+
+// --- Model list ---
+async function loadModels() {
+  const container = document.getElementById("model-list");
+  try {
+    const res = await fetch(`${API}/api/models`);
+    const models = await res.json();
+    if (models.length === 0) {
+      container.innerHTML = `<span class="empty-note">No registered models found.</span>`;
+      return;
+    }
+    container.innerHTML = "";
+    models.forEach(m => {
+      m.versions.forEach(v => {
+        const card = document.createElement("div");
+        card.className = "model-card";
+        const aliasStr = v.aliases.length ? v.aliases.map(a => `<span class="tag-pill">${a}</span>`).join(" ") : "";
+        card.innerHTML = `
+          <div class="model-name">${m.name} <span style="color:var(--text-dim)">v${v.version}</span></div>
+          <div class="model-meta">${aliasStr}</div>
+        `;
+        card.addEventListener("click", () => selectVersion(card, m.name, v.aliases[0] || v.version));
+        container.appendChild(card);
+      });
+    });
+  } catch (e) {
+    container.innerHTML = `<span class="empty-note" style="color:var(--red)">Failed to load models: ${e}</span>`;
+  }
+}
+
+async function selectVersion(cardEl, modelName, alias) {
+  document.querySelectorAll(".model-card").forEach(c => c.classList.remove("selected"));
+  cardEl.classList.add("selected");
+  selectedModel = modelName;
+  selectedAlias = alias;
+
+  const formContainer = document.getElementById("predict-form");
+  formContainer.innerHTML = `<span class="empty-note">Loading signature…</span>`;
+
+  try {
+    const res = await fetch(`${API}/api/models/${modelName}/signature?alias=${alias}`);
+    const data = await res.json();
+
+    if (!data.fields || data.fields.length === 0) {
+      formContainer.innerHTML = `<span class="empty-note">No signature found for this model — cannot build a form.</span>`;
+      return;
+    }
+
+    let html = "";
+    data.fields.forEach(f => {
+      html += `<label>${f.name} <span style="color:var(--text-dim)">(${f.type})</span></label>
+               <input type="text" data-field="${f.name}" placeholder="0.0">`;
+    });
+    html += `<button onclick="runPredict()">Run Prediction</button>
+             <div class="result-box" id="predict-result"></div>
+             <div class="divider"></div>
+             <div class="panel-title" style="margin-top:18px;">Batch Test (CSV)</div>
+             <div class="empty-note" style="margin-bottom:8px;">Upload a CSV with columns matching the schema above — every row gets scored in one batch.</div>
+             <input type="file" id="csv-file" accept=".csv">
+             <button onclick="runBatchPredict()">Upload &amp; Score CSV</button>
+             <div id="batch-result"></div>`;
+    formContainer.innerHTML = html;
+  } catch (e) {
+    formContainer.innerHTML = `<span class="empty-note" style="color:var(--red)">Failed to load signature: ${e}</span>`;
+  }
+}
+
+async function runPredict() {
+  const inputs = {};
+  document.querySelectorAll("#predict-form input[data-field]").forEach(inp => {
+    const val = parseFloat(inp.value);
+    inputs[inp.dataset.field] = isNaN(val) ? 0 : val;
+  });
+
+  const resultBox = document.getElementById("predict-result");
+  resultBox.className = "result-box";
+  resultBox.textContent = "Running…";
+
+  try {
+    const res = await fetch(`${API}/api/predict`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model_name: selectedModel, alias: selectedAlias, inputs })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      resultBox.className = "result-box error";
+      resultBox.textContent = data.detail || "Prediction failed.";
+      return;
+    }
+    resultBox.className = "result-box success";
+    resultBox.textContent = "prediction: " + JSON.stringify(data.prediction);
+  } catch (e) {
+    resultBox.className = "result-box error";
+    resultBox.textContent = "Request failed: " + e;
+  }
+}
+
+// --- Batch CSV prediction ---
+let lastBatchResult = null;
+
+async function runBatchPredict() {
+  const fileInput = document.getElementById("csv-file");
+  const resultContainer = document.getElementById("batch-result");
+
+  if (!fileInput.files.length) {
+    resultContainer.innerHTML = `<div class="result-box error">Choose a CSV file first.</div>`;
+    return;
+  }
+
+  resultContainer.innerHTML = `<div class="result-box">Scoring…</div>`;
+
+  const formData = new FormData();
+  formData.append("model_name", selectedModel);
+  formData.append("alias", selectedAlias);
+  formData.append("file", fileInput.files[0]);
+
+  try {
+    const res = await fetch(`${API}/api/predict/batch`, { method: "POST", body: formData });
+    const data = await res.json();
+
+    if (!res.ok) {
+      resultContainer.innerHTML = `<div class="result-box error">${data.detail || "Batch scoring failed."}</div>`;
+      return;
+    }
+
+    lastBatchResult = data;
+    renderBatchTable(data);
+  } catch (e) {
+    resultContainer.innerHTML = `<div class="result-box error">Request failed: ${e}</div>`;
+  }
+}
+
+function renderBatchTable(data) {
+  const resultContainer = document.getElementById("batch-result");
+  const cols = data.columns;
+
+  let thead = "<tr>" + cols.map(c => `<th>${c}</th>`).join("") + "</tr>";
+  let rows = data.rows.slice(0, 100).map(row => {
+    return "<tr>" + cols.map(c => {
+      const isPred = c === "prediction";
+      return `<td class="${isPred ? 'pred-col' : ''}">${row[c]}</td>`;
+    }).join("") + "</tr>";
+  }).join("");
+
+  const truncatedNote = data.rows.length > 100
+    ? `<div class="empty-note" style="margin-top:6px;">Showing first 100 of ${data.rows.length} rows — full results included in CSV download.</div>`
+    : "";
+
+  resultContainer.innerHTML = `
+    <div class="batch-actions">
+      <span class="empty-note">${data.row_count} rows scored</span>
+      <button class="link-btn" onclick="downloadBatchCsv()">Download results as CSV</button>
+    </div>
+    <div class="batch-table-wrap">
+      <table class="batch-table"><thead>${thead}</thead><tbody>${rows}</tbody></table>
+    </div>
+    ${truncatedNote}
+  `;
+}
+
+async function downloadBatchCsv() {
+  const fileInput = document.getElementById("csv-file");
+  if (!fileInput.files.length) return;
+
+  const formData = new FormData();
+  formData.append("model_name", selectedModel);
+  formData.append("alias", selectedAlias);
+  formData.append("file", fileInput.files[0]);
+
+  const res = await fetch(`${API}/api/predict/batch/csv`, { method: "POST", body: formData });
+  if (!res.ok) {
+    alert("Download failed — try re-running the scoring first.");
+    return;
+  }
+  const blob = await res.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `predictions_${selectedModel}_${selectedAlias}.csv`;
+  a.click();
+  window.URL.revokeObjectURL(url);
+}
+// --- Champion vs Challenger comparison ---
+async function runCompare() {
+  const modelName = document.getElementById("cmp-model-name").value.trim();
+  const aliasA = document.getElementById("cmp-alias-a").value.trim();
+  const aliasB = document.getElementById("cmp-alias-b").value.trim();
+  const targetCol = document.getElementById("cmp-target-col").value.trim();
+  const fileInput = document.getElementById("cmp-file");
+  const resultContainer = document.getElementById("compare-result");
+
+  if (!fileInput.files.length) {
+    resultContainer.innerHTML = `<div class="result-box error" style="max-width:640px;">Choose a labeled CSV file first.</div>`;
+    return;
+  }
+
+  resultContainer.innerHTML = `<div class="result-box" style="max-width:640px;">Scoring both versions…</div>`;
+
+  const formData = new FormData();
+  formData.append("model_name", modelName);
+  formData.append("alias_a", aliasA);
+  formData.append("alias_b", aliasB);
+  formData.append("target_column", targetCol);
+  formData.append("file", fileInput.files[0]);
+
+  try {
+    const res = await fetch(`${API}/api/compare`, { method: "POST", body: formData });
+    const data = await res.json();
+
+    if (!res.ok) {
+      resultContainer.innerHTML = `<div class="result-box error" style="max-width:640px;">${data.detail || "Comparison failed."}</div>`;
+      return;
+    }
+
+    renderCompareResult(data);
+  } catch (e) {
+    resultContainer.innerHTML = `<div class="result-box error" style="max-width:640px;">Request failed: ${e}</div>`;
+  }
+}
+
+function metricCard(label, alias, metrics, isWinner) {
+  return `
+    <div class="metric-card ${isWinner ? 'is-winner' : ''}">
+      <div class="metric-card-title">${label} <span style="color:var(--text-dim)">(${alias})</span> ${isWinner ? '<span class="winner-badge">WINNER</span>' : ''}</div>
+      <div class="metric-row"><span>Accuracy</span><span class="val">${metrics.accuracy}</span></div>
+      <div class="metric-row"><span>Precision</span><span class="val">${metrics.precision}</span></div>
+      <div class="metric-row"><span>Recall</span><span class="val">${metrics.recall}</span></div>
+      <div class="metric-row"><span>F1</span><span class="val">${metrics.f1}</span></div>
+    </div>
+  `;
+}
+
+function renderCompareResult(data) {
+  const resultContainer = document.getElementById("compare-result");
+
+  const deltaSign = data.f1_delta >= 0 ? "+" : "";
+  const verdict = `
+    <div class="verdict-banner">
+      <strong>${data.winner}</strong> wins on F1 (delta: ${deltaSign}${data.f1_delta}) —
+      scored on ${data.row_count} rows, ${data.disagreement_count} disagreements between the two versions.
+    </div>
+  `;
+
+  const cards = `
+    <div class="compare-grid">
+      ${metricCard("Alias A", data.alias_a, data.metrics_a, data.winner === data.alias_a)}
+      ${metricCard("Alias B", data.alias_b, data.metrics_b, data.winner === data.alias_b)}
+    </div>
+  `;
+
+  const disagreements = data.rows.filter(r => !r.agree).slice(0, 100);
+  let tableHtml = "";
+  if (disagreements.length > 0) {
+    const rowsHtml = disagreements.map(r => `
+      <tr class="disagree-row">
+        <td>${r.row}</td><td>${r.actual}</td><td>${r.pred_a}</td><td>${r.pred_b}</td>
+      </tr>
+    `).join("");
+    tableHtml = `
+      <div class="panel-title" style="margin-top:22px;">Disagreements (Alias A vs Alias B)</div>
+      <div class="batch-table-wrap" style="max-width:720px;">
+        <table class="batch-table">
+          <thead><tr><th>Row</th><th>Actual</th><th>Pred A</th><th>Pred B</th></tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+    `;
+  } else {
+    tableHtml = `<div class="empty-note" style="margin-top:16px;">Both versions agreed on every row.</div>`;
+  }
+
+  resultContainer.innerHTML = verdict + cards + tableHtml;
+}
+// --- Chat ---
+async function sendChat() {
+  const input = document.getElementById("chat-input");
+  const prompt = input.value.trim();
+  if (!prompt) return;
+  input.value = "";
+
+  const log = document.getElementById("chat-log");
+  log.innerHTML += `<div class="msg user">${prompt}</div>`;
+  const pendingId = "pending-" + Date.now();
+  log.innerHTML += `<div class="msg bot pending" id="${pendingId}">thinking…</div>`;
+  log.scrollTop = log.scrollHeight;
+
+  try {
+    const res = await fetch(`${API}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt })
+    });
+    const data = await res.json();
+    const el = document.getElementById(pendingId);
+    el.classList.remove("pending");
+    el.textContent = res.ok ? data.response : ("Error: " + data.detail);
+  } catch (e) {
+    const el = document.getElementById(pendingId);
+    el.classList.remove("pending");
+    el.textContent = "Request failed: " + e;
+  }
+  log.scrollTop = log.scrollHeight;
+}
+
+checkHealth();
+loadModels();
+setInterval(checkHealth, 10000);
+</script>
+
+</body>
+</html>
