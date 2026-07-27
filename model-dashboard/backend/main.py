@@ -25,9 +25,8 @@ from pydantic import BaseModel
 
 import mlflow
 from mlflow import MlflowClient
-
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-
+from training_manager import training_manager
 
 MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://127.0.0.1:5000")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
@@ -37,6 +36,37 @@ mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 client = MlflowClient(tracking_uri=MLFLOW_TRACKING_URI)
 
 app = FastAPI(title="Model Dashboard")
+
+# --- Feature metadata: maps technical signature column names to human-friendly
+# labels/descriptions/input hints. Purely cosmetic — the model still receives
+# the same technical column names/values, positionally unchanged.
+# In a real system, this would come from a feature store's catalog rather than
+# being hand-written here; for our synthetic dataset we're inventing plausible
+# churn-relevant meanings so the form is actually usable by a non-technical tester.
+FEATURE_METADATA = {
+    "credit-churn-gbc": {
+        "feature_0":  {"label": "Tenure (months)",              "description": "How long the customer has held an account.",            "input_type": "number", "placeholder": "24"},
+        "feature_1":  {"label": "Monthly Spend ($)",              "description": "Average monthly transaction/spend amount.",             "input_type": "number", "placeholder": "150"},
+        "feature_2":  {"label": "Support Tickets (90d)",          "description": "Number of support contacts in the last 90 days.",       "input_type": "number", "placeholder": "1"},
+        "feature_3":  {"label": "Products Held",                  "description": "Number of distinct products/accounts held.",            "input_type": "number", "placeholder": "2"},
+        "feature_4":  {"label": "Late Payments (12mo)",           "description": "Count of late/missed payments in the last year.",       "input_type": "number", "placeholder": "0"},
+        "feature_5":  {"label": "Avg Session Frequency (per wk)", "description": "How often the customer logs into the app/site.",        "input_type": "number", "placeholder": "3"},
+        "feature_6":  {"label": "Credit Utilization (%)",         "description": "Percent of available credit currently in use.",         "input_type": "number", "placeholder": "35"},
+        "feature_7":  {"label": "Days Since Last Login",          "description": "Recency of last account activity.",                     "input_type": "number", "placeholder": "5"},
+        "feature_8":  {"label": "Referrals Made",                 "description": "Number of other customers referred.",                   "input_type": "number", "placeholder": "0"},
+        "feature_9":  {"label": "Contract Length (months)",       "description": "Length of current contract/commitment period.",         "input_type": "number", "placeholder": "12"},
+        "feature_10": {"label": "Complaint Count",                "description": "Formal complaints filed, all-time.",                    "input_type": "number", "placeholder": "0"},
+        "feature_11": {"label": "Discount Applied (%)",           "description": "Current promotional discount, if any.",                 "input_type": "number", "placeholder": "0"},
+        "feature_12": {"label": "Avg Transaction Size ($)",       "description": "Mean value per individual transaction.",                "input_type": "number", "placeholder": "45"},
+        "feature_13": {"label": "Channel Preference Score",       "description": "Encoded preference for digital vs. in-branch service.", "input_type": "number", "placeholder": "0.7"},
+        "feature_14": {"label": "Household Size",                 "description": "Number of linked/household accounts.",                  "input_type": "number", "placeholder": "1"},
+        "feature_15": {"label": "Loyalty Points Balance",         "description": "Current unredeemed loyalty/rewards balance.",           "input_type": "number", "placeholder": "500"},
+        "feature_16": {"label": "Email Engagement Rate (%)",      "description": "Percent of marketing emails opened.",                   "input_type": "number", "placeholder": "20"},
+        "feature_17": {"label": "Autopay Enabled",                "description": "1 if automatic payment is set up, else 0.",             "input_type": "number", "placeholder": "1"},
+        "feature_18": {"label": "Competitor Offer Seen",          "description": "1 if customer is known to have seen a competitor promo.", "input_type": "number", "placeholder": "0"},
+        "feature_19": {"label": "Overall Satisfaction (1-10)",    "description": "Most recent survey satisfaction score.",                "input_type": "number", "placeholder": "7"},
+    }
+}
 
 app.add_middleware(
     CORSMiddleware,
@@ -65,6 +95,18 @@ class PredictRequest(BaseModel):
 
 class ChatRequest(BaseModel):
     prompt: str
+
+
+class TrainRequest(BaseModel):
+    script_path: str          # path to a training script ON THE MACHINE RUNNING THIS API
+    data_path: str             # path to training data (CSV); script falls back to synthetic if missing
+    model_name: str
+    compute_target: str = "local"   # "local" only, for now — see training_manager.py
+
+
+class EvaluateJobRequest(BaseModel):
+    test_data_path: str
+    target_column: str = "target"
 
 
 # --- Routes ---
@@ -109,7 +151,12 @@ def list_models():
 
 @app.get("/api/models/{model_name}/signature")
 def get_signature(model_name: str, alias: str = "champion"):
-    """Return the input schema for a given model+alias, so the frontend can build a form."""
+    """
+    Return the input schema for a given model+alias, enriched with human-friendly
+    labels/descriptions where we have them (FEATURE_METADATA). The technical
+    column `name` is always included and unchanged — that's what actually gets
+    sent back in /api/predict — only the display label/description are cosmetic.
+    """
     uri = f"models:/{model_name}@{alias}"
     try:
         info = mlflow.models.get_model_info(uri)
@@ -119,9 +166,19 @@ def get_signature(model_name: str, alias: str = "champion"):
     if info.signature is None or info.signature.inputs is None:
         return {"fields": []}
 
+    model_meta = FEATURE_METADATA.get(model_name, {})
+
     fields = []
     for col in info.signature.inputs.inputs:
-        fields.append({"name": col.name, "type": str(col.type)})
+        meta = model_meta.get(col.name, {})
+        fields.append({
+            "name": col.name,                                   # technical name — used as the actual request key
+            "type": str(col.type),
+            "label": meta.get("label", col.name),                # falls back to technical name if no metadata exists
+            "description": meta.get("description", ""),
+            "input_type": meta.get("input_type", "number"),
+            "placeholder": meta.get("placeholder", "0.0"),
+        })
     return {"fields": fields}
 
 
@@ -226,36 +283,6 @@ async def predict_batch_csv(
     )
 
 
-@app.post("/api/chat")
-@mlflow.trace(name="dashboard-llm-chat")
-def chat(req: ChatRequest):
-    try:
-        response = requests.post(OLLAMA_URL, json={
-            "model": OLLAMA_MODEL,
-            "prompt": req.prompt,
-            "stream": False,
-        }, timeout=120)
-        response.raise_for_status()
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Ollama request failed: {e}")
-
-    return {"response": response.json().get("response", "")}
-
-
-# --- Serve the frontend ---
-frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
-
-@app.get("/")
-def serve_index():
-    return FileResponse(os.path.join(frontend_dir, "index.html"))
-
-app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
-
-
-
-
-
-
 @app.post("/api/compare")
 async def compare_models(
     model_name: str = Form(...),
@@ -334,3 +361,106 @@ async def compare_models(
     }
 
 
+@app.post("/api/train")
+def start_training(req: TrainRequest):
+    """
+    Launches a training script as a background job and returns immediately
+    with a job_id. This does NOT block waiting for training to finish —
+    poll /api/train/status/{job_id} to track it.
+    """
+    try:
+        job_id = training_manager.submit_job(
+            script_path=req.script_path,
+            data_path=req.data_path,
+            model_name=req.model_name,
+            compute_target=req.compute_target,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except NotImplementedError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+
+    return {"job_id": job_id, "status": "started"}
+
+
+@app.get("/api/train/status/{job_id}")
+def training_status(job_id: str):
+    try:
+        return training_manager.get_status(job_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"No such job: {job_id}")
+
+
+@app.get("/api/train/jobs")
+def list_training_jobs():
+    return training_manager.list_jobs()
+
+
+@app.post("/api/train/{job_id}/evaluate")
+def evaluate_training_job(job_id: str, req: EvaluateJobRequest):
+    """
+    Runs mlflow.models.evaluate() against the version this job registered,
+    using a held-out labeled CSV, and logs the metrics onto the SAME run
+    that produced the model — exactly the discipline established earlier
+    (metrics belong on the run that produced the model, not backfilled).
+    After this, the version has real metrics and can pass the CI gate.
+    """
+    status = training_manager.get_status(job_id)
+    if status["status"] != "completed":
+        raise HTTPException(status_code=400, detail=f"Job is '{status['status']}', not completed yet.")
+    if not status["registered_version"]:
+        raise HTTPException(status_code=404, detail="No registered model version found for this job.")
+
+    if not os.path.isfile(req.test_data_path):
+        raise HTTPException(status_code=400, detail=f"Test data file not found: {req.test_data_path}")
+
+    model_name = status["model_name"]
+    version = status["registered_version"]
+    mv = client.get_model_version(name=model_name, version=version)
+
+    eval_df = pd.read_csv(req.test_data_path)
+    if req.target_column not in eval_df.columns:
+        raise HTTPException(status_code=400, detail=f"'{req.target_column}' not found in test data.")
+
+    from mlflow.models import evaluate as mlflow_evaluate
+
+    with mlflow.start_run(run_id=mv.run_id):
+        result = mlflow_evaluate(
+            model=f"runs:/{mv.run_id}/model",
+            data=eval_df,
+            targets=req.target_column,
+            model_type="classifier",
+        )
+
+    return {
+        "model_name": model_name,
+        "version": version,
+        "run_id": mv.run_id,
+        "metrics": result.metrics,
+    }
+
+
+@app.post("/api/chat")
+@mlflow.trace(name="dashboard-llm-chat")
+def chat(req: ChatRequest):
+    try:
+        response = requests.post(OLLAMA_URL, json={
+            "model": OLLAMA_MODEL,
+            "prompt": req.prompt,
+            "stream": False,
+        }, timeout=120)
+        response.raise_for_status()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Ollama request failed: {e}")
+
+    return {"response": response.json().get("response", "")}
+
+
+# --- Serve the frontend ---
+frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
+
+@app.get("/")
+def serve_index():
+    return FileResponse(os.path.join(frontend_dir, "index.html"))
+
+app.mount("/static", StaticFiles(directory=frontend_dir), name="static")

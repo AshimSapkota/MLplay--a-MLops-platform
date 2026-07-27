@@ -1,0 +1,36 @@
+[11:09:27] Starting training job 7c4d7caf -> registering as 'internal-tools-dummy-object-detector'
+[11:09:27] No data file found at ./nocsvfile.csv — generating synthetic 'object-present' data instead.
+[11:09:27] Training on 640 rows, 32 features...
+[11:09:27] ...training step 1/3
+[11:09:29] ...training step 2/3
+[11:09:31] ...training step 3/3
+[11:09:33] Train accuracy: 1.000 | Test accuracy: 0.944
+🏃 View run train-job-7c4d7caf at: http://127.0.0.1:5000/#/experiments/6/runs/c60715ad336c47e0988d4baf4456c9a8
+🧪 View experiment at: http://127.0.0.1:5000/#/experiments/6
+Traceback (most recent call last):
+  File "/home/ashim/PROJECTS/mlplay/venv/lib/python3.12/site-packages/mlflow/sklearn/__init__.py", line 683, in _save_model
+    skops.io.load(output_path, trusted=skops_trusted_types)
+  File "/home/ashim/PROJECTS/mlplay/venv/lib/python3.12/site-packages/skops/io/_persist.py", line 151, in load
+    audit_tree(tree, trusted=trusted)
+  File "/home/ashim/PROJECTS/mlplay/venv/lib/python3.12/site-packages/skops/io/_audit.py", line 60, in audit_tree
+    raise UntrustedTypesFoundException(unsafe)
+skops.io.exceptions.UntrustedTypesFoundException: Untrusted types found in the file: ['sklearn.neural_network._stochastic_optimizers.AdamOptimizer'].
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/ashim/PROJECTS/mlplay/model-dashboard/training_scripts/train_dummy_model.py", line 125, in <module>
+    main()
+  File "/home/ashim/PROJECTS/mlplay/model-dashboard/training_scripts/train_dummy_model.py", line 104, in main
+    model_info = mlflow.sklearn.log_model(
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ashim/PROJECTS/mlplay/venv/lib/python3.12/site-packages/mlflow/sklearn/__init__.py", line 478, in log_model
+    return Model.log(
+           ^^^^^^^^^^
+  File "/home/ashim/PROJECTS/mlplay/venv/lib/python3.12/site-packages/mlflow/models/model.py", line 1218, in log
+    flavor.save_model(path=local_path, mlflow_model=mlflow_model, **kwargs)
+  File "/home/ashim/PROJECTS/mlplay/venv/lib/python3.12/site-packages/mlflow/sklearn/__init__.py", line 301, in save_model
+    _save_model(
+  File "/home/ashim/PROJECTS/mlplay/venv/lib/python3.12/site-packages/mlflow/sklearn/__init__.py", line 686, in _save_model
+    raise MlflowException(
+mlflow.exceptions.MlflowException: The saved sklearn model references untrusted types. If you are sure loading these types is safe, set the 'skops_trusted_types' parameter when calling 'log_model' or 'save_model' to the list of trusted types. Root error: Untrusted types found in the file: ['sklearn.neural_network._stochastic_optimizers.AdamOptimizer'].

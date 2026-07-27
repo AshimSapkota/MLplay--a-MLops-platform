@@ -211,10 +211,18 @@
 
   label {
     display: block;
+    font-size: 12px;
+    color: var(--text);
+    margin: 12px 0 2px 0;
+    font-family: var(--font-ui);
+    font-weight: 600;
+  }
+
+  .field-desc {
     font-size: 11px;
     color: var(--text-dim);
-    margin: 10px 0 4px 0;
-    font-family: var(--font-mono);
+    margin-bottom: 4px;
+    line-height: 1.4;
   }
 
   input[type=text], input[type=number] {
@@ -392,6 +400,73 @@
 
   .disagree-row td { color: var(--amber); }
 
+  /* --- Train view --- */
+  .status-badge {
+    display: inline-block;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+  .status-badge.pending  { background: #2A323C; color: var(--text-dim); }
+  .status-badge.running  { background: #3A3212; color: var(--amber); }
+  .status-badge.completed{ background: #123A32; color: var(--accent); }
+  .status-badge.failed   { background: #3A1414; color: var(--red); }
+
+  .log-tail {
+    margin-top: 14px;
+    background: #0A0D11;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: #9FE8D8;
+    white-space: pre-wrap;
+    max-height: 260px;
+    overflow-y: auto;
+    line-height: 1.5;
+  }
+
+  .job-card {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: border-color 0.15s ease;
+  }
+  .job-card:hover { border-color: var(--accent-dim); }
+  .job-card.selected { border-color: var(--accent); background: var(--panel-raised); }
+
+  .job-card-id {
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .status-summary-row {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .status-summary-row:last-child { border-bottom: none; }
+  .status-summary-row .val { color: var(--text); }
+
+  .eval-subform {
+    margin-top: 18px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+
   /* --- Chat view --- */
   .chat-wrap {
     max-width: 720px;
@@ -457,6 +532,7 @@
     <div class="nav">
       <div class="nav-item active" data-view="registry">Registry</div>
       <div class="nav-item" data-view="compare">Compare</div>
+      <div class="nav-item" data-view="train">Train</div>
       <div class="nav-item" data-view="llm">LLM Chat</div>
     </div>
   </div>
@@ -507,6 +583,40 @@
 
       <div id="compare-result"></div>
     </div>
+
+    <!-- Training jobs view -->
+    <div class="view" id="view-train">
+      <h1>Training Jobs</h1>
+      <div class="view-sub">Submit a training script + data path, watch it run, then register/evaluate the result. Runs locally for now (compute_target=local).</div>
+
+      <div class="grid">
+        <div class="panel">
+          <div class="panel-title">Submit Job</div>
+          <label>Training Script Path</label>
+          <input type="text" id="tr-script-path" placeholder="/full/path/to/train_dummy_model.py">
+
+          <label>Data Path (CSV — falls back to synthetic data if missing)</label>
+          <input type="text" id="tr-data-path" placeholder="/full/path/to/data.csv">
+
+          <label>Model Name (registry name)</label>
+          <input type="text" id="tr-model-name" value="internal-tools-dummy-object-detector">
+
+          <label>Compute Target</label>
+          <input type="text" id="tr-compute-target" value="local" disabled style="opacity:0.6;">
+
+          <button onclick="startTraining()">Start Training Job</button>
+
+          <div class="panel-title" style="margin-top:26px;">Past Jobs</div>
+          <div id="job-list"><span class="empty-note">No jobs yet.</span></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-title">Job Status</div>
+          <div id="job-status-panel"><span class="empty-note">Submit or select a job to see its status here.</span></div>
+        </div>
+      </div>
+    </div>
+
     <!-- LLM chat view -->
     <div class="view" id="view-llm">
       <h1>LLM Test Chat</h1>
@@ -600,8 +710,9 @@ async function selectVersion(cardEl, modelName, alias) {
 
     let html = "";
     data.fields.forEach(f => {
-      html += `<label>${f.name} <span style="color:var(--text-dim)">(${f.type})</span></label>
-               <input type="text" data-field="${f.name}" placeholder="0.0">`;
+      const descHtml = f.description ? `<div class="field-desc">${f.description}</div>` : "";
+      html += `<label>${f.label}</label>${descHtml}
+               <input type="text" data-field="${f.name}" placeholder="${f.placeholder}">`;
     });
     html += `<button onclick="runPredict()">Run Prediction</button>
              <div class="result-box" id="predict-result"></div>
@@ -733,6 +844,7 @@ async function downloadBatchCsv() {
   a.click();
   window.URL.revokeObjectURL(url);
 }
+
 // --- Champion vs Challenger comparison ---
 async function runCompare() {
   const modelName = document.getElementById("cmp-model-name").value.trim();
@@ -824,6 +936,163 @@ function renderCompareResult(data) {
 
   resultContainer.innerHTML = verdict + cards + tableHtml;
 }
+
+// --- Training jobs ---
+let activeJobId = null;
+let pollHandle = null;
+
+async function startTraining() {
+  const scriptPath = document.getElementById("tr-script-path").value.trim();
+  const dataPath = document.getElementById("tr-data-path").value.trim();
+  const modelName = document.getElementById("tr-model-name").value.trim();
+
+  if (!scriptPath || !dataPath || !modelName) {
+    alert("Fill in script path, data path, and model name first.");
+    return;
+  }
+
+  try {
+    const res = await fetch(`${API}/api/train`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ script_path: scriptPath, data_path: dataPath, model_name: modelName, compute_target: "local" })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(data.detail || "Failed to start job.");
+      return;
+    }
+    await loadJobList();
+    watchJob(data.job_id);
+  } catch (e) {
+    alert("Request failed: " + e);
+  }
+}
+
+async function loadJobList() {
+  const container = document.getElementById("job-list");
+  try {
+    const res = await fetch(`${API}/api/train/jobs`);
+    const jobs = await res.json();
+    if (jobs.length === 0) {
+      container.innerHTML = `<span class="empty-note">No jobs yet.</span>`;
+      return;
+    }
+    container.innerHTML = "";
+    jobs.slice().reverse().forEach(j => {
+      const card = document.createElement("div");
+      card.className = "job-card" + (j.job_id === activeJobId ? " selected" : "");
+      card.innerHTML = `
+        <span class="job-card-id">${j.job_id}<br><span style="color:var(--text-dim); font-size:10px;">${j.model_name}</span></span>
+        <span class="status-badge ${j.status}">${j.status}</span>
+      `;
+      card.addEventListener("click", () => watchJob(j.job_id));
+      container.appendChild(card);
+    });
+  } catch (e) {
+    container.innerHTML = `<span class="empty-note" style="color:var(--red)">Failed to load jobs: ${e}</span>`;
+  }
+}
+
+function watchJob(jobId) {
+  activeJobId = jobId;
+  if (pollHandle) clearInterval(pollHandle);
+
+  refreshJobStatus(jobId);
+  pollHandle = setInterval(() => refreshJobStatus(jobId), 2000);
+
+  document.querySelectorAll(".job-card").forEach(c => c.classList.remove("selected"));
+}
+
+async function refreshJobStatus(jobId) {
+  const panel = document.getElementById("job-status-panel");
+  try {
+    const res = await fetch(`${API}/api/train/status/${jobId}`);
+    const data = await res.json();
+    if (!res.ok) {
+      panel.innerHTML = `<span class="empty-note" style="color:var(--red)">${data.detail}</span>`;
+      if (pollHandle) clearInterval(pollHandle);
+      return;
+    }
+    renderJobStatus(data);
+    loadJobList(); // keep the list's badges in sync too
+
+    if (data.status === "completed" || data.status === "failed") {
+      if (pollHandle) clearInterval(pollHandle);
+    }
+  } catch (e) {
+    panel.innerHTML = `<span class="empty-note" style="color:var(--red)">Request failed: ${e}</span>`;
+    if (pollHandle) clearInterval(pollHandle);
+  }
+}
+
+function renderJobStatus(data) {
+  const panel = document.getElementById("job-status-panel");
+
+  let evalHtml = "";
+  if (data.status === "completed" && data.registered_version) {
+    evalHtml = `
+      <div class="eval-subform">
+        <div class="panel-title">Evaluate This Version</div>
+        <label>Test Data Path (labeled CSV)</label>
+        <input type="text" id="eval-test-path" placeholder="/full/path/to/test_data.csv">
+        <label>Target Column</label>
+        <input type="text" id="eval-target-col" value="target">
+        <button onclick="evaluateJob('${data.job_id}')">Run Evaluation</button>
+        <div class="result-box" id="eval-result"></div>
+      </div>
+    `;
+  }
+
+  panel.innerHTML = `
+    <div class="status-summary-row"><span>Job ID</span><span class="val">${data.job_id}</span></div>
+    <div class="status-summary-row"><span>Status</span><span class="status-badge ${data.status}">${data.status}</span></div>
+    <div class="status-summary-row"><span>Model Name</span><span class="val">${data.model_name}</span></div>
+    <div class="status-summary-row"><span>Registered Version</span><span class="val">${data.registered_version ?? '—'}</span></div>
+    <div class="status-summary-row"><span>Return Code</span><span class="val">${data.returncode ?? '—'}</span></div>
+    <div class="log-tail">${data.log_tail ? data.log_tail.replace(/</g, "&lt;") : "(no output yet)"}</div>
+    ${evalHtml}
+  `;
+
+  // Auto-scroll log to bottom
+  const logEl = panel.querySelector(".log-tail");
+  if (logEl) logEl.scrollTop = logEl.scrollHeight;
+}
+
+async function evaluateJob(jobId) {
+  const testPath = document.getElementById("eval-test-path").value.trim();
+  const targetCol = document.getElementById("eval-target-col").value.trim();
+  const resultBox = document.getElementById("eval-result");
+
+  if (!testPath) {
+    resultBox.className = "result-box error";
+    resultBox.textContent = "Provide a test data path first.";
+    return;
+  }
+
+  resultBox.className = "result-box";
+  resultBox.textContent = "Evaluating…";
+
+  try {
+    const res = await fetch(`${API}/api/train/${jobId}/evaluate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ test_data_path: testPath, target_column: targetCol })
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      resultBox.className = "result-box error";
+      resultBox.textContent = data.detail || "Evaluation failed.";
+      return;
+    }
+    resultBox.className = "result-box success";
+    resultBox.textContent = JSON.stringify(data.metrics, null, 2);
+  } catch (e) {
+    resultBox.className = "result-box error";
+    resultBox.textContent = "Request failed: " + e;
+  }
+}
+
 // --- Chat ---
 async function sendChat() {
   const input = document.getElementById("chat-input");
@@ -857,6 +1126,7 @@ async function sendChat() {
 
 checkHealth();
 loadModels();
+loadJobList();
 setInterval(checkHealth, 10000);
 </script>
 
