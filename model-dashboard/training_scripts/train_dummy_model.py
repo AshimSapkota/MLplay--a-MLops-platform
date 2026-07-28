@@ -107,6 +107,12 @@ def main():
             signature=signature,
             input_example=X_train.iloc[:2],
             registered_model_name=args.model_name,
+            # MLPClassifier carries an AdamOptimizer as part of its fitted state.
+            # skops (MLflow's safer default serializer) refuses untrusted types
+            # by default — this is the security check from Phase 2 working as
+            # intended. We explicitly trust it here because it's our own
+            # just-trained model, not a file from an untrusted source.
+            skops_trusted_types=["sklearn.neural_network._stochastic_optimizers.AdamOptimizer"],
         )
         version = model_info.registered_model_version
 
