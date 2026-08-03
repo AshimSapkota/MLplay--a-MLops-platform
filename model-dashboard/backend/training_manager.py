@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from mlflow import MlflowClient
+from remote_gpu import RemoteGPUJob
+from manual_remote import ManualRemoteJob
 
 MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://127.0.0.1:5000")
 LOG_DIR = os.path.join(os.path.dirname(__file__), "training_logs")
@@ -52,6 +54,8 @@ class TrainingJob:
     finished_at: Optional[float] = None
     returncode: Optional[int] = None
     registered_version: Optional[str] = None
+    remote_gpu_job: Optional[object] = None  # RemoteGPUJob instance, only for compute_target="remote_gpu"
+    manual_remote_job: Optional[object] = None  # ManualRemoteJob instance, only for compute_target="manual_remote"
 
 
 class TrainingManager:
@@ -61,9 +65,33 @@ class TrainingManager:
         self._client = MlflowClient(tracking_uri=MLFLOW_TRACKING_URI)
 
     def submit_job(self, script_path: str, data_path: str, model_name: str,
-                    compute_target: str = "local", extra_args: dict | None = None) -> str:
+                    compute_target: str = "local", extra_args: dict | None = None,
+                    requirements_path: str | None = None,
+                    manual_host: str | None = None, manual_username: str | None = None,
+                    manual_password: str | None = None, manual_use_gpu: bool = True,
+                    manual_key_path: str | None = None, manual_port: int = 22) -> str:
         if not os.path.isfile(script_path):
             raise FileNotFoundError(f"Training script not found: {script_path}")
+
+        # Auto-detect a requirements.txt sitting next to the script if the
+        # caller didn't explicitly provide one — a common convention, and
+        # saves having to specify it every time for scripts that have one.
+        if requirements_path is None:
+            candidate = os.path.join(os.path.dirname(os.path.abspath(script_path)), "requirements.txt")
+            if os.path.isfile(candidate):
+                requirements_path = candidate
+        else:
+            # An explicit path WAS given — validate it right now, locally,
+            # before spending time/money launching a remote instance for a
+            # job that's guaranteed to fail. This also removes any ambiguity
+            # from SSH-side timing/ordering when checking this deep inside
+            # the remote upload step.
+            if not os.path.isfile(requirements_path):
+                raise FileNotFoundError(
+                    f"requirements_path was set to '{requirements_path}' but that file "
+                    f"doesn't exist on this machine (the one running the dashboard backend, "
+                    f"not the remote instance). Double check the path and permissions."
+                )
 
         job_id = str(uuid.uuid4())[:8]
         log_path = os.path.join(LOG_DIR, f"{job_id}.log")
@@ -84,17 +112,88 @@ class TrainingManager:
         )
 
         if compute_target == "local":
+            # Local jobs run inside your existing backend venv, which is
+            # assumed to already have whatever the script needs — no
+            # per-job install step here (that's specifically a remote_gpu
+            # concern, since a fresh EC2 instance starts with nothing).
             log_file = open(log_path, "w")
             job.process = subprocess.Popen(cmd, stdout=log_file, stderr=subprocess.STDOUT, text=True)
             job.status = "running"
             job.started_at = time.time()
         elif compute_target == "remote_gpu":
-            # Not implemented — see module docstring. Left explicit rather than
-            # silently falling back to local, so nobody assumes GPU dispatch
-            # is happening when it isn't.
-            raise NotImplementedError(
-                "Remote GPU dispatch isn't wired up yet. Use compute_target='local' for now."
-            )
+            log_file = open(log_path, "w")
+            log_file.write("Launching remote GPU instance — this takes a couple minutes "
+                            "(instance boot + SSH readiness), not a bug if it looks idle.\n")
+            if requirements_path:
+                log_file.write(f"Using requirements file: {requirements_path}\n")
+            else:
+                log_file.write("No requirements.txt found next to the script — "
+                                "will fall back to a bare-minimum install (mlflow only).\n")
+            log_file.flush()
+
+            remote_job = RemoteGPUJob()
+            try:
+                remote_job.launch_and_run(script_path, data_path, model_name, job_id,
+                                            requirements_path=requirements_path)
+            except Exception as e:
+                log_file.write(f"Remote launch failed: {e}\n")
+                # CRITICAL: launch_and_run can fail AFTER the instance was
+                # already created (e.g. upload or docker step failed after
+                # SSH succeeded) — without this, that instance keeps running
+                # and billing indefinitely with nothing tracking it anymore.
+                # This is exactly what caused multiple instances to pile up.
+                try:
+                    remote_job.stop_instance()
+                    log_file.write("Instance stopped after launch failure.\n")
+                except Exception as stop_err:
+                    log_file.write(
+                        f"WARNING: could not confirm instance was stopped after failure: {stop_err}. "
+                        f"Check the AWS console manually — instance_id={remote_job.instance_id}\n"
+                    )
+                log_file.close()
+                job.status = "failed"
+                job.returncode = 1
+                with self._lock:
+                    self._jobs[job_id] = job
+                return job_id
+
+            job.remote_gpu_job = remote_job
+            job.status = "running"
+            job.started_at = time.time()
+            log_file.close()
+        elif compute_target == "manual_remote":
+            if not (manual_host and manual_username and (manual_password or manual_key_path)):
+                raise ValueError(
+                    "manual_remote requires manual_host, manual_username, and either "
+                    "manual_password or manual_key_path."
+                )
+            log_file = open(log_path, "w")
+            log_file.write(f"Connecting to {manual_host} — this is YOUR instance, not one this "
+                            f"code launched or will stop.\n")
+            log_file.flush()
+
+            manual_job = ManualRemoteJob(manual_host, manual_username, password=manual_password,
+                                           key_path=manual_key_path, port=manual_port)
+            try:
+                manual_job.connect()
+                manual_job.upload_dataset_and_script(script_path, data_path, requirements_path)
+                manual_job.ensure_docker()
+                manual_job.start_training(model_name, job_id, MLFLOW_TRACKING_URI, data_path,
+                                            use_gpu=manual_use_gpu)
+            except Exception as e:
+                log_file.write(f"Manual remote setup failed: {e}\n")
+                log_file.close()
+                manual_job.close()
+                job.status = "failed"
+                job.returncode = 1
+                with self._lock:
+                    self._jobs[job_id] = job
+                return job_id
+
+            job.manual_remote_job = manual_job
+            job.status = "running"
+            job.started_at = time.time()
+            log_file.close()
         else:
             raise ValueError(f"Unknown compute_target: {compute_target}")
 
@@ -104,7 +203,10 @@ class TrainingManager:
         return job_id
 
     def _refresh_status(self, job: TrainingJob):
-        if job.status == "running" and job.process is not None:
+        if job.status != "running":
+            return
+
+        if job.compute_target == "local" and job.process is not None:
             returncode = job.process.poll()
             if returncode is not None:
                 job.returncode = returncode
@@ -112,6 +214,39 @@ class TrainingManager:
                 job.status = "completed" if returncode == 0 else "failed"
                 if job.status == "completed":
                     job.registered_version = self._find_registered_version(job)
+
+        elif job.compute_target == "remote_gpu" and job.remote_gpu_job is not None:
+            result = job.remote_gpu_job.poll()
+            # Overwrite the local log file with the latest remote tail, so
+            # get_status can read it the same way regardless of compute_target.
+            with open(job.log_path, "w") as f:
+                f.write(result["log_tail"])
+
+            if not result["running"]:
+                job.returncode = result["returncode"]
+                job.finished_at = time.time()
+                job.status = "completed" if result["returncode"] == 0 else "failed"
+                if job.status == "completed":
+                    job.registered_version = self._find_registered_version(job)
+                # COST CONTROL: stop the instance the moment the job is done,
+                # success or failure. This is the single most important line
+                # in this file for anyone paying for the instance.
+                job.remote_gpu_job.stop_instance()
+
+        elif job.compute_target == "manual_remote" and job.manual_remote_job is not None:
+            result = job.manual_remote_job.poll()
+            with open(job.log_path, "w") as f:
+                f.write(result["log_tail"])
+
+            if not result["running"]:
+                job.returncode = result["returncode"]
+                job.finished_at = time.time()
+                job.status = "completed" if result["returncode"] == 0 else "failed"
+                if job.status == "completed":
+                    job.registered_version = self._find_registered_version(job)
+                # NOT stopping anything here — this is your instance, not
+                # ours to manage. Just close our SSH session cleanly.
+                job.manual_remote_job.close()
 
     def _find_registered_version(self, job: TrainingJob) -> Optional[str]:
         """

@@ -2,10 +2,17 @@
 Model Dashboard — FastAPI backend
 
 Exposes:
-  GET  /api/health                          -> MLflow connectivity check
+  GET  /api/health                          -> MLflow/Ollama connectivity check
   GET  /api/models                          -> list registered models + versions + aliases + tags
-  GET  /api/models/{name}/signature?alias=X  -> input schema for a model version
+  GET  /api/models/{name}/signature?alias=X  -> input schema (with friendly labels) for a model version
   POST /api/predict                         -> run inference against a registered model
+  POST /api/predict/batch                   -> score an uploaded CSV, return rows + predictions as JSON
+  POST /api/predict/batch/csv               -> same, but streams a downloadable CSV back
+  POST /api/compare                         -> champion vs challenger comparison on labeled test data
+  POST /api/train                           -> submit a training job (local or remote_gpu)
+  GET  /api/train/status/{job_id}           -> poll a training job's status/logs
+  GET  /api/train/jobs                      -> list all training jobs
+  POST /api/train/{job_id}/evaluate         -> evaluate a completed job's registered model
   POST /api/chat                            -> proxy a prompt to the local Ollama LLM, traced
 
 Run with:
@@ -17,6 +24,9 @@ import os
 import io
 import requests
 import pandas as pd
+from dotenv import load_dotenv
+load_dotenv()  # reads .env in this directory before anything below reads os.environ
+
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -37,12 +47,16 @@ client = MlflowClient(tracking_uri=MLFLOW_TRACKING_URI)
 
 app = FastAPI(title="Model Dashboard")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # local dev tool only — lock this down before ever exposing beyond localhost
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # --- Feature metadata: maps technical signature column names to human-friendly
 # labels/descriptions/input hints. Purely cosmetic — the model still receives
 # the same technical column names/values, positionally unchanged.
-# In a real system, this would come from a feature store's catalog rather than
-# being hand-written here; for our synthetic dataset we're inventing plausible
-# churn-relevant meanings so the form is actually usable by a non-technical tester.
 FEATURE_METADATA = {
     "credit-churn-gbc": {
         "feature_0":  {"label": "Tenure (months)",              "description": "How long the customer has held an account.",            "input_type": "number", "placeholder": "24"},
@@ -68,13 +82,6 @@ FEATURE_METADATA = {
     }
 }
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # local dev tool only — lock this down before ever exposing beyond localhost
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Cache loaded pyfunc models so we don't reload from disk/artifact-store on every request
 _model_cache = {}
 
@@ -98,10 +105,17 @@ class ChatRequest(BaseModel):
 
 
 class TrainRequest(BaseModel):
-    script_path: str          # path to a training script ON THE MACHINE RUNNING THIS API
-    data_path: str             # path to training data (CSV); script falls back to synthetic if missing
+    script_path: str
+    data_path: str
     model_name: str
-    compute_target: str = "local"   # "local" only, for now — see training_manager.py
+    compute_target: str = "local"
+    requirements_path: str | None = None  # optional — auto-detected next to script if omitted
+    manual_host: str | None = None       # required if compute_target == "manual_remote"
+    manual_username: str | None = None
+    manual_password: str | None = None   # provide this OR manual_key_path
+    manual_key_path: str | None = None
+    manual_port: int = 22
+    manual_use_gpu: bool = True
 
 
 class EvaluateJobRequest(BaseModel):
@@ -130,7 +144,6 @@ def health():
 
 @app.get("/api/models")
 def list_models():
-    """List every registered model, its versions, aliases, and key tags."""
     result = []
     for rm in client.search_registered_models():
         versions = []
@@ -151,12 +164,6 @@ def list_models():
 
 @app.get("/api/models/{model_name}/signature")
 def get_signature(model_name: str, alias: str = "champion"):
-    """
-    Return the input schema for a given model+alias, enriched with human-friendly
-    labels/descriptions where we have them (FEATURE_METADATA). The technical
-    column `name` is always included and unchanged — that's what actually gets
-    sent back in /api/predict — only the display label/description are cosmetic.
-    """
     uri = f"models:/{model_name}@{alias}"
     try:
         info = mlflow.models.get_model_info(uri)
@@ -172,9 +179,9 @@ def get_signature(model_name: str, alias: str = "champion"):
     for col in info.signature.inputs.inputs:
         meta = model_meta.get(col.name, {})
         fields.append({
-            "name": col.name,                                   # technical name — used as the actual request key
+            "name": col.name,
             "type": str(col.type),
-            "label": meta.get("label", col.name),                # falls back to technical name if no metadata exists
+            "label": meta.get("label", col.name),
             "description": meta.get("description", ""),
             "input_type": meta.get("input_type", "number"),
             "placeholder": meta.get("placeholder", "0.0"),
@@ -190,13 +197,11 @@ def predict(req: PredictRequest):
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"Could not load model {uri}: {e}")
 
-    import pandas as pd
     df = pd.DataFrame([req.inputs])
 
     try:
         prediction = model.predict(df)
     except Exception as e:
-        # Schema enforcement errors (from the signature) surface here — pass them through clearly
         raise HTTPException(status_code=400, detail=str(e))
 
     return {"prediction": prediction.tolist() if hasattr(prediction, "tolist") else prediction}
@@ -208,11 +213,6 @@ async def predict_batch(
     alias: str = Form(...),
     file: UploadFile = File(...),
 ):
-    """
-    Accepts a CSV file, runs the whole file through the model in one batch call,
-    and returns each row plus its prediction. Also usable to get a CSV back
-    (see /api/predict/batch/csv below) for a straight download.
-    """
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Please upload a .csv file.")
 
@@ -234,8 +234,6 @@ async def predict_batch(
     try:
         predictions = model.predict(df)
     except Exception as e:
-        # Same schema enforcement as single predictions — e.g. missing/extra columns,
-        # wrong dtypes — surfaces here as a clear, specific error rather than a crash.
         raise HTTPException(status_code=400, detail=str(e))
 
     result_df = df.copy()
@@ -254,7 +252,6 @@ async def predict_batch_csv(
     alias: str = Form(...),
     file: UploadFile = File(...),
 ):
-    """Same as /api/predict/batch, but streams the result straight back as a downloadable CSV."""
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Please upload a .csv file.")
 
@@ -291,12 +288,6 @@ async def compare_models(
     target_column: str = Form(...),
     file: UploadFile = File(...),
 ):
-    """
-    Runs two model versions (e.g. champion vs challenger) against the SAME
-    labeled test file and returns per-model metrics plus a row-by-row
-    comparison — the UI equivalent of the phase9 A/B script, but against
-    real uploaded test data instead of a synthetic eval split.
-    """
     if not file.filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Please upload a .csv file.")
 
@@ -334,7 +325,6 @@ async def compare_models(
     preds_a, metrics_a = load_and_score(alias_a)
     preds_b, metrics_b = load_and_score(alias_b)
 
-    # Which one actually wins on F1 — same decision logic as phase9, just surfaced in the UI
     winner = alias_b if metrics_b["f1"] > metrics_a["f1"] else alias_a
     f1_delta = round(metrics_b["f1"] - metrics_a["f1"], 4)
 
@@ -363,22 +353,28 @@ async def compare_models(
 
 @app.post("/api/train")
 def start_training(req: TrainRequest):
-    """
-    Launches a training script as a background job and returns immediately
-    with a job_id. This does NOT block waiting for training to finish —
-    poll /api/train/status/{job_id} to track it.
-    """
     try:
         job_id = training_manager.submit_job(
             script_path=req.script_path,
             data_path=req.data_path,
             model_name=req.model_name,
             compute_target=req.compute_target,
+            requirements_path=req.requirements_path,
+            manual_host=req.manual_host,
+            manual_username=req.manual_username,
+            manual_password=req.manual_password,
+            manual_key_path=req.manual_key_path,
+            manual_port=req.manual_port,
+            manual_use_gpu=req.manual_use_gpu,
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except NotImplementedError as e:
         raise HTTPException(status_code=501, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     return {"job_id": job_id, "status": "started"}
 
@@ -398,13 +394,6 @@ def list_training_jobs():
 
 @app.post("/api/train/{job_id}/evaluate")
 def evaluate_training_job(job_id: str, req: EvaluateJobRequest):
-    """
-    Runs mlflow.models.evaluate() against the version this job registered,
-    using a held-out labeled CSV, and logs the metrics onto the SAME run
-    that produced the model — exactly the discipline established earlier
-    (metrics belong on the run that produced the model, not backfilled).
-    After this, the version has real metrics and can pass the CI gate.
-    """
     status = training_manager.get_status(job_id)
     if status["status"] != "completed":
         raise HTTPException(status_code=400, detail=f"Job is '{status['status']}', not completed yet.")

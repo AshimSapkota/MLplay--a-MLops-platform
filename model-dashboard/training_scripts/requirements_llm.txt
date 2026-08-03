@@ -1,0 +1,7 @@
+mlflow
+pandas
+transformers
+torch
+torchvision
+datasets
+accelerate>=1.1.0
