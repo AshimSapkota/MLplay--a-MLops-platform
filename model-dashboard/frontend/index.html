@@ -602,7 +602,15 @@
           <input type="text" id="tr-model-name" value="internal-tools-dummy-object-detector">
 
           <label>Compute Target</label>
-          <input type="text" id="tr-compute-target" value="local" disabled style="opacity:0.6;">
+          <select id="tr-compute-target" onchange="toggleRequirementsField()" style="width:100%; background:var(--bg); border:1px solid var(--border); border-radius:5px; padding:8px 10px; color:var(--text); font-family:var(--font-mono); font-size:12px;">
+            <option value="local">local</option>
+            <option value="remote_gpu">remote_gpu (AWS, real cost per run)</option>
+          </select>
+
+          <div id="tr-requirements-wrap" style="display:none;">
+            <label>Requirements Path (optional — auto-detects requirements.txt next to the script if left blank)</label>
+            <input type="text" id="tr-requirements-path" placeholder="/full/path/to/requirements_llm.txt">
+          </div>
 
           <button onclick="startTraining()">Start Training Job</button>
 
@@ -708,11 +716,16 @@ async function selectVersion(cardEl, modelName, alias) {
       return;
     }
 
+    if (data.fields.length === 1 && data.fields[0].input_type === "image") {
+      renderImagePredictForm(formContainer, data.fields[0]);
+      return;
+    }
+
     let html = "";
     data.fields.forEach(f => {
       const descHtml = f.description ? `<div class="field-desc">${f.description}</div>` : "";
       html += `<label>${f.label}</label>${descHtml}
-               <input type="text" data-field="${f.name}" placeholder="${f.placeholder}">`;
+               <input type="text" data-field="${f.name}" data-type="${f.type}" placeholder="${f.placeholder}">`;
     });
     html += `<button onclick="runPredict()">Run Prediction</button>
              <div class="result-box" id="predict-result"></div>
@@ -728,11 +741,142 @@ async function selectVersion(cardEl, modelName, alias) {
   }
 }
 
+// --- Image-input models (e.g. object detection): file picker + live preview + drawn boxes ---
+function renderImagePredictForm(container, field) {
+  container.innerHTML = `
+    <label>${field.label || "Image"}</label>
+    ${field.description ? `<div class="field-desc">${field.description}</div>` : ""}
+    <input type="file" id="img-file-input" accept="image/*" onchange="onImageFileSelected(event)">
+    <div class="image-preview-wrap" id="image-preview-wrap" style="display:none;">
+      <div style="position:relative; display:inline-block; margin-top:14px;">
+        <img id="preview-img" style="max-width:100%; border-radius:6px; display:block;">
+        <canvas id="preview-canvas" style="position:absolute; top:0; left:0; pointer-events:none;"></canvas>
+      </div>
+    </div>
+    <button onclick="runImagePredict()" style="display:block;">Run Detection</button>
+    <div class="result-box" id="predict-result"></div>
+  `;
+}
+
+let selectedImageFile = null;
+
+function onImageFileSelected(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  selectedImageFile = file;
+
+  const img = document.getElementById("preview-img");
+  const wrap = document.getElementById("image-preview-wrap");
+  const canvas = document.getElementById("preview-canvas");
+
+  const url = URL.createObjectURL(file);
+  img.onload = () => {
+    // Match canvas pixel size to the DISPLAYED size of the image, not its
+    // natural resolution — keeps box coordinates aligned regardless of how
+    // large the source photo is.
+    canvas.width = img.clientWidth;
+    canvas.height = img.clientHeight;
+    canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+  };
+  img.src = url;
+  wrap.style.display = "block";
+
+  // Clear any boxes drawn from a previous image
+  const resultBox = document.getElementById("predict-result");
+  if (resultBox) resultBox.textContent = "";
+}
+
+async function runImagePredict() {
+  const resultBox = document.getElementById("predict-result");
+
+  if (!selectedImageFile) {
+    resultBox.className = "result-box error";
+    resultBox.textContent = "Choose an image first.";
+    return;
+  }
+
+  resultBox.className = "result-box";
+  resultBox.textContent = "Running detection…";
+
+  const formData = new FormData();
+  formData.append("model_name", selectedModel);
+  formData.append("alias", selectedAlias);
+  formData.append("file", selectedImageFile);
+
+  try {
+    const res = await fetch(`${API}/api/predict/image`, { method: "POST", body: formData });
+    const data = await res.json();
+
+    if (!res.ok) {
+      resultBox.className = "result-box error";
+      resultBox.textContent = data.detail || "Detection failed.";
+      return;
+    }
+
+    drawDetections(data.detections);
+
+    resultBox.className = "result-box success";
+    if (!data.detections || data.detections.length === 0) {
+      resultBox.textContent = "No objects detected in this image.";
+    } else {
+      resultBox.textContent = data.detections
+        .map(d => `${d.class} — ${(d.confidence * 100).toFixed(1)}%`)
+        .join("\n");
+    }
+  } catch (e) {
+    resultBox.className = "result-box error";
+    resultBox.textContent = "Request failed: " + e;
+  }
+}
+
+function drawDetections(detections) {
+  const img = document.getElementById("preview-img");
+  const canvas = document.getElementById("preview-canvas");
+  const ctx = canvas.getContext("2d");
+
+  canvas.width = img.clientWidth;
+  canvas.height = img.clientHeight;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (!detections || detections.length === 0) return;
+
+  // bbox coordinates from the model are in the ORIGINAL image's pixel
+  // space — scale them to match however large the browser is actually
+  // displaying the image right now.
+  const scaleX = img.clientWidth / img.naturalWidth;
+  const scaleY = img.clientHeight / img.naturalHeight;
+
+  ctx.strokeStyle = "#5EEAD4";
+  ctx.lineWidth = 2;
+  ctx.font = "13px 'IBM Plex Mono', monospace";
+  ctx.textBaseline = "bottom";
+
+  detections.forEach(det => {
+    const [x1, y1, x2, y2] = det.bbox_xyxy;
+    const dx = x1 * scaleX, dy = y1 * scaleY;
+    const dw = (x2 - x1) * scaleX, dh = (y2 - y1) * scaleY;
+
+    ctx.strokeRect(dx, dy, dw, dh);
+
+    const label = `${det.class} ${(det.confidence * 100).toFixed(0)}%`;
+    const textWidth = ctx.measureText(label).width;
+    ctx.fillStyle = "#5EEAD4";
+    ctx.fillRect(dx, Math.max(0, dy - 18), textWidth + 8, 18);
+    ctx.fillStyle = "#0F1318";
+    ctx.fillText(label, dx + 4, Math.max(18, dy));
+  });
+}
+
 async function runPredict() {
   const inputs = {};
   document.querySelectorAll("#predict-form input[data-field]").forEach(inp => {
-    const val = parseFloat(inp.value);
-    inputs[inp.dataset.field] = isNaN(val) ? 0 : val;
+    const fieldType = inp.dataset.type || "";
+    if (fieldType.includes("string")) {
+      inputs[inp.dataset.field] = inp.value;
+    } else {
+      const val = parseFloat(inp.value);
+      inputs[inp.dataset.field] = isNaN(val) ? 0 : val;
+    }
   });
 
   const resultBox = document.getElementById("predict-result");
@@ -941,21 +1085,37 @@ function renderCompareResult(data) {
 let activeJobId = null;
 let pollHandle = null;
 
+function toggleRequirementsField() {
+  const target = document.getElementById("tr-compute-target").value;
+  const wrap = document.getElementById("tr-requirements-wrap");
+  wrap.style.display = target === "remote_gpu" ? "block" : "none";
+}
+
 async function startTraining() {
   const scriptPath = document.getElementById("tr-script-path").value.trim();
   const dataPath = document.getElementById("tr-data-path").value.trim();
   const modelName = document.getElementById("tr-model-name").value.trim();
+  const computeTarget = document.getElementById("tr-compute-target").value;
+  const requirementsPath = document.getElementById("tr-requirements-path").value.trim();
 
   if (!scriptPath || !dataPath || !modelName) {
     alert("Fill in script path, data path, and model name first.");
     return;
   }
 
+  if (computeTarget === "remote_gpu") {
+    const confirmed = confirm("This launches a real, billed AWS GPU instance. Continue?");
+    if (!confirmed) return;
+  }
+
   try {
+    const body = { script_path: scriptPath, data_path: dataPath, model_name: modelName, compute_target: computeTarget };
+    if (requirementsPath) body.requirements_path = requirementsPath;
+
     const res = await fetch(`${API}/api/train`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ script_path: scriptPath, data_path: dataPath, model_name: modelName, compute_target: "local" })
+      body: JSON.stringify(body)
     });
     const data = await res.json();
     if (!res.ok) {

@@ -178,12 +178,25 @@ def get_signature(model_name: str, alias: str = "champion"):
     fields = []
     for col in info.signature.inputs.inputs:
         meta = model_meta.get(col.name, {})
+        col_type_str = str(col.type)
+
+        # Default input_type based on the actual column type, unless
+        # explicit metadata overrides it. image_path is a naming convention
+        # from our own model wrappers (see train_yolo_object_detector.py) —
+        # any model using that exact column name gets treated as image input.
+        if col.name == "image_path":
+            default_input_type = "image"
+        elif "string" in col_type_str:
+            default_input_type = "text"
+        else:
+            default_input_type = "number"
+
         fields.append({
             "name": col.name,
-            "type": str(col.type),
+            "type": col_type_str,
             "label": meta.get("label", col.name),
             "description": meta.get("description", ""),
-            "input_type": meta.get("input_type", "number"),
+            "input_type": meta.get("input_type", default_input_type),
             "placeholder": meta.get("placeholder", "0.0"),
         })
     return {"fields": fields}
@@ -205,6 +218,59 @@ def predict(req: PredictRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
     return {"prediction": prediction.tolist() if hasattr(prediction, "tolist") else prediction}
+
+
+@app.post("/api/predict/image")
+async def predict_image(
+    model_name: str = Form(...),
+    alias: str = Form(...),
+    file: UploadFile = File(...),
+):
+    """
+    Accepts an actual uploaded image file (not a path), saves it to a temp
+    location server-side, runs it through the model the same way as any
+    other prediction, and — since this is specifically for image-input
+    models like the YOLO detector — parses the JSON detections string back
+    into real objects so the frontend can draw boxes without doing its own
+    JSON parsing of a nested string.
+    """
+    import tempfile
+    import json as json_module
+
+    suffix = os.path.splitext(file.filename)[1] or ".jpg"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(await file.read())
+        tmp_path = tmp.name
+
+    uri = f"models:/{model_name}@{alias}"
+    try:
+        model = _load_model(uri)
+    except Exception as e:
+        os.remove(tmp_path)
+        raise HTTPException(status_code=404, detail=f"Could not load model {uri}: {e}")
+
+    try:
+        df = pd.DataFrame({"image_path": [tmp_path]})
+        prediction = model.predict(df)
+    except Exception as e:
+        os.remove(tmp_path)
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        if os.path.isfile(tmp_path):
+            os.remove(tmp_path)
+
+    # The YOLO wrapper returns a JSON string per row — parse it back into a
+    # real list so the frontend gets structured data, not a string to re-parse.
+    raw = prediction[0] if hasattr(prediction, "__getitem__") else prediction
+    try:
+        detections = json_module.loads(raw)
+    except (TypeError, ValueError):
+        # Not JSON — some other model type returned this endpoint by mistake,
+        # or the wrapper's output format changed. Surface it as-is rather
+        # than silently hiding it.
+        detections = raw
+
+    return {"detections": detections}
 
 
 @app.post("/api/predict/batch")
