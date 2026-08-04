@@ -1,4 +1,78 @@
-venv
-mlartifacts
+# -----------------------
+# Python
+# -----------------------
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Environment variables
+.env
+.env.*
+
+# Keep example env files
+!.env.example
+
+# -----------------------
+# MLflow
+# -----------------------
+mlartifacts/
 mlflow.db
+
+# -----------------------
+# Logs
+# -----------------------
+logs/
+training_logs/
+*.log
+
+# -----------------------
+# Model weights
+# -----------------------
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.engine
+
+# -----------------------
+# Datasets
+# -----------------------
+datasets/
+data/
+face-detection-dataset/
+
+# -----------------------
+# Archives
+# -----------------------
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.gz
+
+# -----------------------
+# Torrents
+# -----------------------
+*.torrent
+
+# -----------------------
+# IDE
+# -----------------------
+.vscode/
+.idea/
+
+# -----------------------
+# OS files
+# -----------------------
+.DS_Store
+Thumbs.db
+
+# -----------------------
+# ngrok
+# -----------------------
 ngrok.tgz
