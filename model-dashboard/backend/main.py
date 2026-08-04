@@ -148,18 +148,24 @@ def list_models():
     for rm in client.search_registered_models():
         versions = []
         for mv in client.search_model_versions(f"name='{rm.name}'"):
+            experiment_id = None
+            try:
+                experiment_id = client.get_run(mv.run_id).info.experiment_id
+            except Exception:
+                pass  # run may have been deleted independently of the model version
             versions.append({
                 "version": mv.version,
                 "aliases": [a for a, v in rm.aliases.items() if v == mv.version] if rm.aliases else [],
                 "tags": mv.tags or {},
                 "run_id": mv.run_id,
+                "experiment_id": experiment_id,
             })
         result.append({
             "name": rm.name,
             "aliases": rm.aliases or {},
             "versions": sorted(versions, key=lambda v: int(v["version"]), reverse=True),
         })
-    return result
+    return {"models": result, "mlflow_tracking_uri": MLFLOW_TRACKING_URI}
 
 
 @app.get("/api/models/{model_name}/signature")

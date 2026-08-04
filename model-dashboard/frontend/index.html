@@ -209,6 +209,22 @@
     color: var(--accent);
   }
 
+  .mlflow-link-btn {
+    display: inline-block;
+    margin-top: 8px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--amber);
+    text-decoration: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 8px;
+  }
+  .mlflow-link-btn:hover {
+    border-color: var(--amber);
+    background: var(--panel-raised);
+  }
+
   label {
     display: block;
     font-size: 12px;
@@ -674,7 +690,10 @@ async function loadModels() {
   const container = document.getElementById("model-list");
   try {
     const res = await fetch(`${API}/api/models`);
-    const models = await res.json();
+    const data = await res.json();
+    const models = data.models;
+    const mlflowUri = data.mlflow_tracking_uri;
+
     if (models.length === 0) {
       container.innerHTML = `<span class="empty-note">No registered models found.</span>`;
       return;
@@ -685,9 +704,17 @@ async function loadModels() {
         const card = document.createElement("div");
         card.className = "model-card";
         const aliasStr = v.aliases.length ? v.aliases.map(a => `<span class="tag-pill">${a}</span>`).join(" ") : "";
+
+        let mlflowLinkHtml = "";
+        if (v.run_id && v.experiment_id) {
+          const runUrl = `${mlflowUri}/#/experiments/${v.experiment_id}/runs/${v.run_id}`;
+          mlflowLinkHtml = `<a href="${runUrl}" target="_blank" class="mlflow-link-btn" onclick="event.stopPropagation()">View in MLflow ↗</a>`;
+        }
+
         card.innerHTML = `
           <div class="model-name">${m.name} <span style="color:var(--text-dim)">v${v.version}</span></div>
           <div class="model-meta">${aliasStr}</div>
+          ${mlflowLinkHtml}
         `;
         card.addEventListener("click", () => selectVersion(card, m.name, v.aliases[0] || v.version));
         container.appendChild(card);
