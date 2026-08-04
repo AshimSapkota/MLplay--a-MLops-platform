@@ -168,6 +168,33 @@ def list_models():
     return {"models": result, "mlflow_tracking_uri": MLFLOW_TRACKING_URI}
 
 
+@app.get("/api/models/{model_name}/metrics")
+def get_metrics(model_name: str, alias: str = "champion"):
+    """
+    Returns whatever metrics were actually logged on the run behind this
+    model version — deliberately generic. Doesn't assume classifier metrics,
+    detection metrics, or anything specific; just reflects whatever's there,
+    so this works the same for the churn model, the YOLO detector, or
+    anything trained later without code changes.
+    """
+    try:
+        mv = client.get_model_version_by_alias(model_name, alias)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Could not resolve {model_name}@{alias}: {e}")
+
+    try:
+        run = client.get_run(mv.run_id)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Could not load run {mv.run_id}: {e}")
+
+    return {
+        "version": mv.version,
+        "run_id": mv.run_id,
+        "metrics": run.data.metrics,
+        "params": run.data.params,
+    }
+
+
 @app.get("/api/models/{model_name}/signature")
 def get_signature(model_name: str, alias: str = "champion"):
     uri = f"models:/{model_name}@{alias}"

@@ -225,6 +225,54 @@
     background: var(--panel-raised);
   }
 
+  .metrics-panel {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 14px;
+    margin-bottom: 16px;
+  }
+  .metrics-panel-title {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--text-dim);
+    margin-bottom: 10px;
+  }
+  .metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 8px;
+  }
+  .metric-chip {
+    display: flex;
+    flex-direction: column;
+    background: var(--panel-raised);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 6px 10px;
+  }
+  .metric-chip-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: lowercase;
+  }
+  .metric-chip-val {
+    font-family: var(--font-mono);
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--accent);
+    margin-top: 2px;
+  }
+  .metrics-empty {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 16px;
+  }
+
   label {
     display: block;
     font-size: 12px;
@@ -567,6 +615,7 @@
 
         <div class="panel">
           <div class="panel-title">Test Prediction</div>
+          <div id="model-metrics"></div>
           <div id="predict-form"><span class="empty-note">Select a model version to begin.</span></div>
         </div>
       </div>
@@ -725,14 +774,58 @@ async function loadModels() {
   }
 }
 
+async function loadMetrics(modelName, alias, container) {
+  try {
+    const res = await fetch(`${API}/api/models/${modelName}/metrics?alias=${alias}`);
+    const data = await res.json();
+
+    if (!res.ok || !data.metrics || Object.keys(data.metrics).length === 0) {
+      container.innerHTML = `<div class="metrics-empty">No training metrics logged for this version.</div>`;
+      return;
+    }
+
+    // Sort so the most commonly-important-looking metrics surface first —
+    // purely cosmetic ordering, not a hard rule, since metric names vary
+    // wildly across model types (classifier vs detector vs LLM eval).
+    const priority = ["map50-95", "map50", "accuracy", "accuracy_score", "f1", "f1_score",
+                       "precision", "precision_score", "recall", "recall_score", "roc_auc"];
+    const entries = Object.entries(data.metrics).sort((a, b) => {
+      const pa = priority.indexOf(a[0].toLowerCase());
+      const pb = priority.indexOf(b[0].toLowerCase());
+      if (pa === -1 && pb === -1) return a[0].localeCompare(b[0]);
+      if (pa === -1) return 1;
+      if (pb === -1) return -1;
+      return pa - pb;
+    });
+
+    const rows = entries.map(([key, val]) => {
+      const displayVal = typeof val === "number" ? val.toFixed(4) : val;
+      return `<div class="metric-chip"><span class="metric-chip-label">${key}</span><span class="metric-chip-val">${displayVal}</span></div>`;
+    }).join("");
+
+    container.innerHTML = `
+      <div class="metrics-panel">
+        <div class="metrics-panel-title">Training metrics <span class="empty-note">(v${data.version})</span></div>
+        <div class="metrics-grid">${rows}</div>
+      </div>
+    `;
+  } catch (e) {
+    container.innerHTML = `<div class="metrics-empty" style="color:var(--red)">Failed to load metrics: ${e}</div>`;
+  }
+}
+
 async function selectVersion(cardEl, modelName, alias) {
   document.querySelectorAll(".model-card").forEach(c => c.classList.remove("selected"));
   cardEl.classList.add("selected");
   selectedModel = modelName;
   selectedAlias = alias;
 
+  const metricsContainer = document.getElementById("model-metrics");
   const formContainer = document.getElementById("predict-form");
+  metricsContainer.innerHTML = "";
   formContainer.innerHTML = `<span class="empty-note">Loading signature…</span>`;
+
+  loadMetrics(modelName, alias, metricsContainer);
 
   try {
     const res = await fetch(`${API}/api/models/${modelName}/signature?alias=${alias}`);
