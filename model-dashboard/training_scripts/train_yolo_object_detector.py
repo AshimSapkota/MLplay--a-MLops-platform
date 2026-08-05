@@ -39,6 +39,63 @@ def log(msg):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
+def count_training_images(data_yaml_path: str) -> int:
+    """
+    Reads the train image folder path out of data.yaml (relative to the
+    yaml's own location, same convention Ultralytics itself uses) and
+    counts how many image files are actually there. Falls back to 0 if
+    anything about this can't be resolved — callers should treat 0 as
+    "unknown," not "empty dataset."
+    """
+    try:
+        import yaml
+        with open(data_yaml_path) as f:
+            config = yaml.safe_load(f)
+        train_rel_path = config.get("train", "")
+        base_dir = os.path.dirname(os.path.abspath(data_yaml_path))
+        train_dir = os.path.normpath(os.path.join(base_dir, train_rel_path))
+        if not os.path.isdir(train_dir):
+            return 0
+        return sum(
+            1 for f in os.listdir(train_dir)
+            if f.lower().endswith((".jpg", ".jpeg", ".png"))
+        )
+    except Exception:
+        return 0
+
+
+def pick_training_config(image_count: int) -> dict:
+    """
+    Chooses batch size, worker count, and cache mode automatically based on
+    dataset size and how much RAM is actually free right now. These
+    thresholds are reasonable heuristics, not a precise science — the goal
+    is "don't crash the machine," not "squeeze out maximum performance."
+    Bigger dataset or less free memory -> smaller batch, fewer workers,
+    disk-based caching instead of RAM.
+    """
+    try:
+        import psutil
+        available_gb = psutil.virtual_memory().available / (1024 ** 3)
+    except ImportError:
+        available_gb = 4.0  # conservative assumption if psutil isn't installed
+
+    if image_count == 0:
+        # Unknown dataset size (e.g. the coco128 fallback, or count failed) —
+        # stay on the safe side rather than assume it's small.
+        reason = "dataset size unknown — using conservative defaults"
+        return {"batch": 8, "workers": 2, "cache": "disk", "reason": reason}
+
+    if available_gb >= 8 and image_count <= 500:
+        reason = f"{image_count} images, {available_gb:.1f}GB free RAM — comfortable, using RAM cache"
+        return {"batch": 16, "workers": 4, "cache": "ram", "reason": reason}
+    elif available_gb >= 4:
+        reason = f"{image_count} images, {available_gb:.1f}GB free RAM — moderate, using disk cache"
+        return {"batch": 8, "workers": 2, "cache": "disk", "reason": reason}
+    else:
+        reason = f"{image_count} images, only {available_gb:.1f}GB free RAM — conservative settings to avoid OOM"
+        return {"batch": 4, "workers": 1, "cache": "disk", "reason": reason}
+
+
 class YOLODetector(PythonModel):
     """
     Wraps a trained YOLO model for MLflow serving. Input: a DataFrame with
@@ -80,6 +137,10 @@ def main():
     parser.add_argument("--tracking-uri", required=True)
     parser.add_argument("--epochs", type=int, default=25)
     parser.add_argument("--imgsz", type=int, default=640)
+    parser.add_argument("--workers", type=int, default=None,
+        help="Leave unset to auto-pick based on dataset size and available RAM.")
+    parser.add_argument("--batch", type=int, default=None,
+        help="Leave unset to auto-pick based on dataset size and available RAM.")
     args = parser.parse_args()
 
     from ultralytics import YOLO
@@ -98,8 +159,19 @@ def main():
         log("No data.yaml found at the given path — using Ultralytics' built-in "
             "coco128 sample dataset instead (auto-downloads ~7MB on first use).")
 
+    image_count = count_training_images(data_yaml) if data_yaml != "coco128.yaml" else 128
+    auto_config = pick_training_config(image_count)
+    log(f"Auto-detected training config: {auto_config['reason']}")
+
+    # Explicit CLI values always win — auto-detection only fills in what
+    # wasn't specified.
+    batch = args.batch if args.batch is not None else auto_config["batch"]
+    workers = args.workers if args.workers is not None else auto_config["workers"]
+    cache = auto_config["cache"]
+
     log(f"Starting YOLO training job {args.job_id} -> registering as '{args.model_name}'")
     log(f"Dataset: {data_yaml} | epochs: {args.epochs} | image size: {args.imgsz}")
+    log(f"Using batch={batch}, workers={workers}, cache={cache}")
     log(f"Training device: {device}" +
         (f" ({torch.cuda.get_device_name(0)})" if device == 0 else " (no GPU detected — this will be slow)"))
 
@@ -110,6 +182,10 @@ def main():
             "imgsz": args.imgsz,
             "dataset": data_yaml,
             "device": str(device),
+            "workers": workers,
+            "batch": batch,
+            "cache": cache,
+            "train_image_count": image_count,
         })
 
         model = YOLO("yolov8n.pt")  # pretrained nano checkpoint — small, fast, real weights
@@ -124,6 +200,9 @@ def main():
             name=f"job_{args.job_id}",
             verbose=True,
             device=device,
+            cache=cache,
+            workers=workers,
+            batch=batch,
         )
 
         metrics = train_results.results_dict
