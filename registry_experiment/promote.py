@@ -8,7 +8,7 @@ the equivalent of pushing straight to main, bypassing CI.
 
 import sys
 from mlflow import MlflowClient
-from registry_gate import gate_for_candidate, gate_for_champion
+from registry_experiment.registry_gate import gate_for_candidate, gate_for_champion
 
 
 def promote(name: str, version: str, target_alias: str, tracking_uri="http://127.0.0.1:5000"):

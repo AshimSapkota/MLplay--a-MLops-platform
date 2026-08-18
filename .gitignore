@@ -76,3 +76,6 @@ Thumbs.db
 # ngrok
 # -----------------------
 ngrok.tgz
+
+__pycache__/
+*.py[cod]

@@ -48,6 +48,13 @@ def main():
     parser.add_argument("--model-name", required=True)
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--tracking-uri", required=True)
+    # Real, tunable hyperparameters — this is what a sweep actually searches over.
+    # Sensible defaults kept so this script still works standalone, unchanged,
+    # for every non-sweep use case elsewhere in this project.
+    parser.add_argument("--hidden-size", type=int, default=32,
+        help="Size of the first hidden layer (second layer is always half this).")
+    parser.add_argument("--learning-rate", type=float, default=0.001)
+    parser.add_argument("--max-iter", type=int, default=300)
     args = parser.parse_args()
 
     mlflow.set_tracking_uri(args.tracking_uri)
@@ -86,8 +93,18 @@ def main():
         mlflow.log_param("training_job_id", args.job_id)
         mlflow.log_param("n_features", X.shape[1])
         mlflow.log_param("model_type", "MLPClassifier (dummy object-detector stand-in)")
+        mlflow.log_params({
+            "hidden_size": args.hidden_size,
+            "learning_rate": args.learning_rate,
+            "max_iter": args.max_iter,
+        })
 
-        model = MLPClassifier(hidden_layer_sizes=(32, 16), max_iter=300, random_state=42)
+        model = MLPClassifier(
+            hidden_layer_sizes=(args.hidden_size, max(args.hidden_size // 2, 1)),
+            learning_rate_init=args.learning_rate,
+            max_iter=args.max_iter,
+            random_state=42,
+        )
 
         # Fake "epochs" so logs actually show progress over time, like a real job would
         for step in range(3):
@@ -98,6 +115,11 @@ def main():
         train_acc = model.score(X_train, y_train)
         test_acc = model.score(X_test, y_test)
         log(f"Train accuracy: {train_acc:.3f} | Test accuracy: {test_acc:.3f}")
+
+        # Explicit, clearly-named metric — this is what the sweep script reads
+        # back to know how well a given hyperparameter combination did.
+        mlflow.log_metric("train_accuracy", train_acc)
+        mlflow.log_metric("test_accuracy", test_acc)
 
         signature = infer_signature(X_train, model.predict(X_train))
 
