@@ -25,7 +25,7 @@ mlflow.db
 model-dashboard/backend/optuna_studies.db
 model-dashboard/training_scripts/face-detection-dataset-v2/
 model-registry-documentation.docx
-
+update_alias.py
 
 # -----------------------
 # Logs
