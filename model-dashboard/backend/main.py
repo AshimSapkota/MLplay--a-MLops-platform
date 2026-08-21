@@ -37,6 +37,7 @@ import mlflow
 from mlflow import MlflowClient
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from training_manager import training_manager
+from sweep_manager import sweep_manager
 
 MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "http://127.0.0.1:5000")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
@@ -526,6 +527,72 @@ def evaluate_training_job(job_id: str, req: EvaluateJobRequest):
         "run_id": mv.run_id,
         "metrics": result.metrics,
     }
+
+
+class SweepRequest(BaseModel):
+    n_trials: int = 10
+    study_name: str | None = None
+
+
+@app.post("/api/sweep")
+def start_sweep(req: SweepRequest):
+    study_name = sweep_manager.start_sweep(n_trials=req.n_trials, study_name=req.study_name)
+    return {"study_name": study_name, "status": "started"}
+
+
+@app.get("/api/sweep/status/{study_name}")
+def sweep_status(study_name: str):
+    try:
+        return sweep_manager.get_status(study_name)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"No such sweep: {study_name}")
+
+
+@app.get("/api/sweep/list")
+def list_sweeps():
+    return sweep_manager.list_sweeps()
+
+
+@app.get("/api/sweep/{study_name}/plot/{plot_type}")
+def sweep_plot(study_name: str, plot_type: str):
+    """
+    Generates a real Plotly figure server-side using optuna.visualization —
+    the same charts optuna-dashboard itself would show — and returns it as
+    JSON for the frontend to render with Plotly.js. No separate
+    optuna-dashboard process needed.
+    """
+    import optuna
+    import optuna.visualization as vis
+    import sweep_core
+
+    try:
+        study = optuna.load_study(study_name=study_name, storage=sweep_core.STORAGE_URI)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Could not load study '{study_name}': {e}")
+
+    completed = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+    if len(completed) < 2:
+        raise HTTPException(status_code=400,
+            detail="Need at least 2 completed trials before a meaningful chart can be generated.")
+
+    plot_functions = {
+        "optimization_history": vis.plot_optimization_history,
+        "param_importances": vis.plot_param_importances,
+        "parallel_coordinate": vis.plot_parallel_coordinate,
+        "slice": vis.plot_slice,
+    }
+    if plot_type not in plot_functions:
+        raise HTTPException(status_code=400,
+            detail=f"Unknown plot_type '{plot_type}'. Valid options: {list(plot_functions.keys())}")
+
+    try:
+        fig = plot_functions[plot_type](study)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not generate plot: {e}")
+
+    # fig.to_json() (Plotly's own encoder) correctly handles numpy types that
+    # would otherwise fail FastAPI's default JSON serialization.
+    return {"figure_json": fig.to_json()}
 
 
 @app.post("/api/chat")
