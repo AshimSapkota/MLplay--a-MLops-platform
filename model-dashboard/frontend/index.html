@@ -531,6 +531,33 @@
     border-top: 1px solid var(--border);
   }
 
+  .sweep-param-row {
+    display: grid;
+    grid-template-columns: 1fr 90px 1fr 1fr 24px;
+    gap: 6px;
+    align-items: center;
+    margin-bottom: 6px;
+  }
+  .sweep-param-row input, .sweep-param-row select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 5px 6px;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    width: 100%;
+  }
+  .sweep-param-remove {
+    background: none;
+    border: none;
+    color: var(--red);
+    cursor: pointer;
+    font-size: 16px;
+    margin-top: 0;
+    padding: 0;
+  }
+
   .chart-panel {
     background: var(--panel);
     border: 1px solid var(--border);
@@ -618,7 +645,6 @@
       <div class="nav-item active" data-view="registry">Registry</div>
       <div class="nav-item" data-view="compare">Compare</div>
       <div class="nav-item" data-view="train">Train</div>
-      <div class="nav-item" data-view="sweeps">Sweeps</div>
       <div class="nav-item" data-view="llm">LLM Chat</div>
     </div>
   </div>
@@ -674,7 +700,7 @@
     <!-- Training jobs view -->
     <div class="view" id="view-train">
       <h1>Training Jobs</h1>
-      <div class="view-sub">Submit a training script + data path, watch it run, then register/evaluate the result. Runs locally for now (compute_target=local).</div>
+      <div class="view-sub">Submit a training script + data path. Optionally enable a hyperparameter sweep — works with any script that already follows the job contract.</div>
 
       <div class="grid">
         <div class="panel">
@@ -699,39 +725,46 @@
             <input type="text" id="tr-requirements-path" placeholder="/full/path/to/requirements_llm.txt">
           </div>
 
-          <button onclick="startTraining()">Start Training Job</button>
+          <div class="divider" style="margin-top:18px;"></div>
+          <label style="display:flex; align-items:center; gap:8px; margin-top:14px; cursor:pointer;">
+            <input type="checkbox" id="tr-sweep-toggle" onchange="toggleSweepConfig()" style="width:auto;">
+            <span>Enable Hyperparameter Optimization (Optuna)</span>
+          </label>
+
+          <div id="tr-sweep-config" style="display:none;">
+            <div class="empty-note" style="margin:8px 0 12px 0;">
+              Works with any script — as long as the hyperparameter names below match real CLI flags the script accepts, and the metric name matches something the script actually logs to MLflow.
+            </div>
+
+            <label>Number of Trials</label>
+            <input type="text" id="sw-n-trials" value="10">
+
+            <label>Metric to Optimize</label>
+            <input type="text" id="sw-metric-name" placeholder="e.g. test_accuracy, mAP50-95">
+
+            <label>Direction</label>
+            <select id="sw-direction" style="width:100%; background:var(--bg); border:1px solid var(--border); border-radius:5px; padding:8px 10px; color:var(--text); font-family:var(--font-mono); font-size:12px;">
+              <option value="maximize">maximize</option>
+              <option value="minimize">minimize</option>
+            </select>
+
+            <div class="panel-title" style="margin-top:16px;">Hyperparameters to Search</div>
+            <div id="sw-param-rows"></div>
+            <button class="link-btn" style="margin-top:8px;" onclick="addSweepParamRow()">+ Add Hyperparameter</button>
+          </div>
+
+          <button onclick="startTraining()" style="margin-top:18px;">Start</button>
 
           <div class="panel-title" style="margin-top:26px;">Past Jobs</div>
           <div id="job-list"><span class="empty-note">No jobs yet.</span></div>
-        </div>
 
-        <div class="panel">
-          <div class="panel-title">Job Status</div>
-          <div id="job-status-panel"><span class="empty-note">Submit or select a job to see its status here.</span></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Sweeps view -->
-    <div class="view" id="view-sweeps">
-      <h1>Hyperparameter Sweeps</h1>
-      <div class="view-sub">Optuna-driven search, running through the same job submission API as the Train tab. Only the winning trial gets registered.</div>
-
-      <div class="grid">
-        <div class="panel">
-          <div class="panel-title">Start Sweep</div>
-          <label>Number of Trials</label>
-          <input type="text" id="sw-n-trials" value="10">
-
-          <button onclick="startSweep()">Start Sweep</button>
-
-          <div class="panel-title" style="margin-top:26px;">Past Sweeps</div>
+          <div class="panel-title" style="margin-top:18px;">Past Sweeps</div>
           <div id="sweep-list"><span class="empty-note">No sweeps yet.</span></div>
         </div>
 
         <div class="panel">
-          <div class="panel-title">Sweep Status</div>
-          <div id="sweep-status-panel"><span class="empty-note">Start or select a sweep to see its progress here.</span></div>
+          <div class="panel-title" id="status-panel-title">Status</div>
+          <div id="job-status-panel"><span class="empty-note">Submit or select a job or sweep to see its status here.</span></div>
         </div>
       </div>
 
@@ -1265,6 +1298,7 @@ async function startTraining() {
   const modelName = document.getElementById("tr-model-name").value.trim();
   const computeTarget = document.getElementById("tr-compute-target").value;
   const requirementsPath = document.getElementById("tr-requirements-path").value.trim();
+  const sweepEnabled = document.getElementById("tr-sweep-toggle").checked;
 
   if (!scriptPath || !dataPath || !modelName) {
     alert("Fill in script path, data path, and model name first.");
@@ -1276,10 +1310,30 @@ async function startTraining() {
     if (!confirmed) return;
   }
 
-  try {
-    const body = { script_path: scriptPath, data_path: dataPath, model_name: modelName, compute_target: computeTarget };
-    if (requirementsPath) body.requirements_path = requirementsPath;
+  const body = { script_path: scriptPath, data_path: dataPath, model_name: modelName, compute_target: computeTarget };
+  if (requirementsPath) body.requirements_path = requirementsPath;
 
+  if (sweepEnabled) {
+    const metricName = document.getElementById("sw-metric-name").value.trim();
+    const nTrials = parseInt(document.getElementById("sw-n-trials").value, 10);
+    const direction = document.getElementById("sw-direction").value;
+
+    if (!metricName) {
+      alert("Enter the metric name the script logs (e.g. test_accuracy) before starting a sweep.");
+      return;
+    }
+
+    const paramDefs = collectSweepParamDefs();
+    if (paramDefs === null) return;  // validation error already shown
+
+    body.sweep_enabled = true;
+    body.sweep_n_trials = isNaN(nTrials) ? 10 : nTrials;
+    body.sweep_metric_name = metricName;
+    body.sweep_direction = direction;
+    body.sweep_params = paramDefs;
+  }
+
+  try {
     const res = await fetch(`${API}/api/train`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1287,14 +1341,101 @@ async function startTraining() {
     });
     const data = await res.json();
     if (!res.ok) {
-      alert(data.detail || "Failed to start job.");
+      alert(data.detail || "Failed to start.");
       return;
     }
-    await loadJobList();
-    watchJob(data.job_id);
+
+    if (data.is_sweep) {
+      await loadSweepList();
+      watchSweep(data.study_name);
+    } else {
+      await loadJobList();
+      watchJob(data.job_id);
+    }
   } catch (e) {
     alert("Request failed: " + e);
   }
+}
+
+function toggleSweepConfig() {
+  const enabled = document.getElementById("tr-sweep-toggle").checked;
+  document.getElementById("tr-sweep-config").style.display = enabled ? "block" : "none";
+  if (enabled && document.getElementById("sw-param-rows").children.length === 0) {
+    addSweepParamRow();  // start with one row so the section isn't empty
+  }
+}
+
+function addSweepParamRow() {
+  const rows = document.getElementById("sw-param-rows");
+  const row = document.createElement("div");
+  row.className = "sweep-param-row";
+  row.innerHTML = `
+    <input type="text" placeholder="param name (e.g. learning-rate)" class="sw-p-name">
+    <select class="sw-p-type" onchange="onParamTypeChange(this)">
+      <option value="float">float</option>
+      <option value="int">int</option>
+      <option value="categorical">categorical</option>
+    </select>
+    <input type="text" placeholder="low" class="sw-p-low">
+    <input type="text" placeholder="high" class="sw-p-high">
+    <button class="sweep-param-remove" onclick="this.closest('.sweep-param-row').remove()" title="Remove">×</button>
+  `;
+  rows.appendChild(row);
+}
+
+function onParamTypeChange(selectEl) {
+  const row = selectEl.closest(".sweep-param-row");
+  const lowInput = row.querySelector(".sw-p-low");
+  const highInput = row.querySelector(".sw-p-high");
+  if (selectEl.value === "categorical") {
+    lowInput.placeholder = "choices, comma-separated (e.g. 16,32,64)";
+    lowInput.classList.add("sw-p-choices");
+    highInput.style.display = "none";
+  } else {
+    lowInput.placeholder = "low";
+    lowInput.classList.remove("sw-p-choices");
+    highInput.style.display = "";
+    highInput.placeholder = "high";
+  }
+}
+
+function collectSweepParamDefs() {
+  const rows = document.querySelectorAll("#sw-param-rows .sweep-param-row");
+  if (rows.length === 0) {
+    alert("Add at least one hyperparameter to search.");
+    return null;
+  }
+
+  const defs = [];
+  for (const row of rows) {
+    const name = row.querySelector(".sw-p-name").value.trim();
+    const type = row.querySelector(".sw-p-type").value;
+    const lowVal = row.querySelector(".sw-p-low").value.trim();
+
+    if (!name) {
+      alert("Every hyperparameter needs a name matching a real CLI flag on the script.");
+      return null;
+    }
+
+    if (type === "categorical") {
+      const choices = lowVal.split(",").map(c => c.trim()).filter(c => c.length > 0);
+      if (choices.length === 0) {
+        alert(`'${name}': enter at least one comma-separated choice.`);
+        return null;
+      }
+      // Try to parse as numbers if they look numeric, otherwise keep as strings
+      const parsedChoices = choices.map(c => (isNaN(Number(c)) ? c : Number(c)));
+      defs.push({ name, type, choices: parsedChoices });
+    } else {
+      const highVal = row.querySelector(".sw-p-high").value.trim();
+      if (lowVal === "" || highVal === "") {
+        alert(`'${name}': enter both low and high values.`);
+        return null;
+      }
+      defs.push({ name, type, low: parseFloat(lowVal), high: parseFloat(highVal) });
+    }
+  }
+  return defs;
 }
 
 async function loadJobList() {
@@ -1324,7 +1465,12 @@ async function loadJobList() {
 
 function watchJob(jobId) {
   activeJobId = jobId;
+  activeSweepName = null;
   if (pollHandle) clearInterval(pollHandle);
+  if (sweepPollHandle) clearInterval(sweepPollHandle);
+
+  document.getElementById("status-panel-title").textContent = "Job Status";
+  document.getElementById("sweep-charts").innerHTML = "";
 
   refreshJobStatus(jobId);
   pollHandle = setInterval(() => refreshJobStatus(jobId), 2000);
@@ -1477,14 +1623,20 @@ async function loadSweepList() {
 
 function watchSweep(studyName) {
   activeSweepName = studyName;
+  activeJobId = null;
   if (sweepPollHandle) clearInterval(sweepPollHandle);
+  if (pollHandle) clearInterval(pollHandle);
+
+  document.getElementById("status-panel-title").textContent = "Sweep Status";
+  document.getElementById("sweep-charts").innerHTML = "";
+  document.querySelectorAll(".job-card").forEach(c => c.classList.remove("selected"));
 
   refreshSweepStatus(studyName);
   sweepPollHandle = setInterval(() => refreshSweepStatus(studyName), 3000);
 }
 
 async function refreshSweepStatus(studyName) {
-  const panel = document.getElementById("sweep-status-panel");
+  const panel = document.getElementById("job-status-panel");
   try {
     const res = await fetch(`${API}/api/sweep/status/${studyName}`);
     const data = await res.json();
@@ -1510,7 +1662,7 @@ async function refreshSweepStatus(studyName) {
 }
 
 function renderSweepStatus(data) {
-  const panel = document.getElementById("sweep-status-panel");
+  const panel = document.getElementById("job-status-panel");
 
   const bestParamsStr = data.best_params
     ? Object.entries(data.best_params).map(([k, v]) => `${k}=${typeof v === "number" ? v.toFixed(4) : v}`).join(", ")

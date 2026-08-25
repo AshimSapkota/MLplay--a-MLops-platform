@@ -105,6 +105,16 @@ class ChatRequest(BaseModel):
     prompt: str
 
 
+class SweepParamDef(BaseModel):
+    name: str                    # must match a CLI flag the script actually accepts, e.g. "learning-rate"
+    type: str                    # "float" | "int" | "categorical"
+    low: float | None = None     # for float/int
+    high: float | None = None    # for float/int
+    step: float | None = None    # for int (ignored otherwise)
+    log: bool = False            # for float — log-scale sampling
+    choices: list | None = None  # for categorical
+
+
 class TrainRequest(BaseModel):
     script_path: str
     data_path: str
@@ -117,6 +127,15 @@ class TrainRequest(BaseModel):
     manual_key_path: str | None = None
     manual_port: int = 22
     manual_use_gpu: bool = True
+
+    # --- Sweep toggle — when True, this submission runs an Optuna sweep
+    # instead of a single training job. Works with ANY script/model_name
+    # above; nothing sweep-specific needs to exist in the script itself. ---
+    sweep_enabled: bool = False
+    sweep_n_trials: int = 10
+    sweep_metric_name: str | None = None   # required if sweep_enabled — e.g. "test_accuracy"
+    sweep_direction: str = "maximize"      # "maximize" | "minimize"
+    sweep_params: list[SweepParamDef] | None = None  # required if sweep_enabled
 
 
 class EvaluateJobRequest(BaseModel):
@@ -453,6 +472,27 @@ async def compare_models(
 
 @app.post("/api/train")
 def start_training(req: TrainRequest):
+    if req.sweep_enabled:
+        if not req.sweep_metric_name:
+            raise HTTPException(status_code=400, detail="sweep_metric_name is required when sweep_enabled is true.")
+        if not req.sweep_params:
+            raise HTTPException(status_code=400, detail="sweep_params (at least one) is required when sweep_enabled is true.")
+        if req.sweep_direction not in ("maximize", "minimize"):
+            raise HTTPException(status_code=400, detail="sweep_direction must be 'maximize' or 'minimize'.")
+
+        study_name = sweep_manager.start_generic_sweep(
+            script_path=req.script_path,
+            data_path=req.data_path,
+            model_name=req.model_name,
+            compute_target=req.compute_target,
+            requirements_path=req.requirements_path,
+            n_trials=req.sweep_n_trials,
+            metric_name=req.sweep_metric_name,
+            direction=req.sweep_direction,
+            param_defs=[p.model_dump() for p in req.sweep_params],
+        )
+        return {"is_sweep": True, "study_name": study_name, "status": "started"}
+
     try:
         job_id = training_manager.submit_job(
             script_path=req.script_path,
@@ -476,7 +516,7 @@ def start_training(req: TrainRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    return {"job_id": job_id, "status": "started"}
+    return {"is_sweep": False, "job_id": job_id, "status": "started"}
 
 
 @app.get("/api/train/status/{job_id}")
@@ -527,17 +567,6 @@ def evaluate_training_job(job_id: str, req: EvaluateJobRequest):
         "run_id": mv.run_id,
         "metrics": result.metrics,
     }
-
-
-class SweepRequest(BaseModel):
-    n_trials: int = 10
-    study_name: str | None = None
-
-
-@app.post("/api/sweep")
-def start_sweep(req: SweepRequest):
-    study_name = sweep_manager.start_sweep(n_trials=req.n_trials, study_name=req.study_name)
-    return {"study_name": study_name, "status": "started"}
 
 
 @app.get("/api/sweep/status/{study_name}")

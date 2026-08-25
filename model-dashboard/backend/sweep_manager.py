@@ -54,6 +54,58 @@ class SweepManager:
 
         return study_name
 
+    def start_generic_sweep(
+        self,
+        script_path: str,
+        data_path: str,
+        model_name: str,
+        compute_target: str,
+        requirements_path: str | None,
+        n_trials: int,
+        metric_name: str,
+        direction: str,
+        param_defs: list[dict],
+        study_name: str | None = None,
+    ) -> str:
+        study_name = study_name or f"sweep-{int(time.time())}"
+
+        job = SweepJob(study_name=study_name, n_trials=n_trials)
+        with self._lock:
+            self._sweeps[study_name] = job
+
+        thread = threading.Thread(
+            target=self._run_generic,
+            args=(job, script_path, data_path, model_name, compute_target,
+                  requirements_path, metric_name, direction, param_defs),
+            daemon=True,
+        )
+        thread.start()
+
+        return study_name
+
+    def _run_generic(self, job: SweepJob, script_path, data_path, model_name,
+                       compute_target, requirements_path, metric_name, direction, param_defs):
+        try:
+            result = sweep_core.run_generic_sweep(
+                script_path=script_path,
+                data_path=data_path,
+                model_name=model_name,
+                compute_target=compute_target,
+                requirements_path=requirements_path,
+                n_trials=job.n_trials,
+                metric_name=metric_name,
+                direction=direction,
+                param_defs=param_defs,
+                study_name=job.study_name,
+            )
+            job.winning_version = result["winning_version"]
+            job.status = "completed"
+        except Exception as e:
+            job.status = "failed"
+            job.error = str(e)
+        finally:
+            job.finished_at = time.time()
+
     def _run(self, job: SweepJob):
         try:
             result = sweep_core.run_sweep(job.n_trials, job.study_name)
